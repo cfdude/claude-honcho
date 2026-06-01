@@ -1,4 +1,6 @@
 import { Honcho } from "@honcho-ai/sdk";
+import { readFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
 import { loadConfig, getSessionName, getHonchoClientOptions, isPluginEnabled, getCachedStdin, getObservationMode } from "../config.js";
 import {
   getCachedUserContext,
@@ -70,6 +72,18 @@ function shouldSkipContextRetrieval(prompt: string): boolean {
 
 function formatSessionLink(sessionUrl: string): string {
   return `view your session in honcho GUI: ${sessionUrl}`;
+}
+
+function readVersionNag(): string | undefined {
+  const dataDir = process.env.CLAUDE_PLUGIN_DATA;
+  if (!dataDir) return undefined;
+  const flag = join(dataDir, ".version-stale");
+  if (!existsSync(flag)) return undefined;
+  try {
+    return readFileSync(flag, "utf8").trim() || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -145,12 +159,18 @@ export async function handleUserPrompt(): Promise<void> {
   // Track message count for threshold-based refresh
   const messageCountBefore = getMessageCount();
   incrementMessageCount();
-  const shouldShowSessionLink = messageCountBefore === 0;
-
-  // Build session link lazily — only materialized on first message
-  const sessionLink = shouldShowSessionLink
-    ? formatSessionLink(honchoSessionUrl(config.workspace, sessionName))
-    : undefined;
+  // Stagger the one-off banners so the first prompt isn't crowded. The
+  // version-update nag (if stale) takes the first message and bumps the GUI
+  // session link to the second; with no nag, the link shows on the first.
+  // The nag flag is written at SessionStart and stable for the session, so
+  // its presence on message 2 tells us the link hasn't been shown yet.
+  const nag = readVersionNag();
+  const sessionLink =
+    messageCountBefore === 0
+      ? nag ?? formatSessionLink(honchoSessionUrl(config.workspace, sessionName))
+      : messageCountBefore === 1 && nag
+        ? formatSessionLink(honchoSessionUrl(config.workspace, sessionName))
+        : undefined;
 
   // Skip trivial prompts — no context needed for "y", "ok", etc.
   if (shouldSkipContextRetrieval(prompt)) {
