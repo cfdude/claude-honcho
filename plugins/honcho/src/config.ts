@@ -706,7 +706,7 @@ export function getHonchoClientOptions(config: HonchoCLAUDEConfig): HonchoClient
     baseURL: getHonchoBaseUrl(config),
     workspaceId: config.workspace,
     timeout: 8000,
-    maxRetries: 1,
+    maxRetries: 0,
   };
 }
 

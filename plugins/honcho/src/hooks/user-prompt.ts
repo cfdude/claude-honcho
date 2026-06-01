@@ -1,4 +1,6 @@
 import { Honcho } from "@honcho-ai/sdk";
+import { readFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
 import { loadConfig, getSessionName, getHonchoClientOptions, isPluginEnabled, getCachedStdin, getObservationMode } from "../config.js";
 import {
   getCachedUserContext,
@@ -10,7 +12,7 @@ import {
   shouldRefreshKnowledgeGraph,
   markKnowledgeGraphRefreshed,
   getInstanceIdForCwd,
-  queueMessage,
+  chunkContent,
 } from "../cache.js";
 import { logHook, logApiCall, logCache, setLogContext } from "../log.js";
 import { visContextLine, visSkipMessage, addSystemMessage, verboseApiResult, verboseList } from "../visual.js";
@@ -72,6 +74,18 @@ function formatSessionLink(sessionUrl: string): string {
   return `view your session in honcho GUI: ${sessionUrl}`;
 }
 
+function readVersionNag(): string | undefined {
+  const dataDir = process.env.CLAUDE_PLUGIN_DATA;
+  if (!dataDir) return undefined;
+  const flag = join(dataDir, ".version-stale");
+  if (!existsSync(flag)) return undefined;
+  try {
+    return readFileSync(flag, "utf8").trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * UserPromptSubmit hook — serves cached context instantly, refreshes when stale.
  *
@@ -116,20 +130,47 @@ export async function handleUserPrompt(): Promise<void> {
 
   logHook("user-prompt", `Prompt received (${prompt.length} chars)`);
 
-  // Queue user prompt for upload at session-end (instant, no network)
+  const honcho = new Honcho(getHonchoClientOptions(config));
+
+  // Best-effort upload. Wrap the entire SDK interaction so a transient
+  // rejection during session/peer setup can't abort context retrieval below.
   if (config.saveMessages !== false) {
-    queueMessage(prompt, config.peerName, cwd, instanceId || undefined);
+    try {
+      const [session, userPeer] = await Promise.all([
+        honcho.session(sessionName),
+        honcho.peer(config.peerName),
+      ]);
+      const chunks = chunkContent(prompt);
+      const messages = chunks.map((chunk) =>
+        userPeer.message(chunk, {
+          metadata: {
+            instance_id: instanceId || undefined,
+            session_affinity: sessionName,
+          },
+        })
+      );
+      logApiCall("session.addMessages", "POST", `user prompt (${prompt.length} chars)`);
+      await session.addMessages(messages);
+    } catch (e) {
+      logHook("user-prompt", `Upload failed: ${e}`);
+    }
   }
 
   // Track message count for threshold-based refresh
   const messageCountBefore = getMessageCount();
   incrementMessageCount();
-  const shouldShowSessionLink = messageCountBefore === 0;
-
-  // Build session link lazily — only materialized on first message
-  const sessionLink = shouldShowSessionLink
-    ? formatSessionLink(honchoSessionUrl(config.workspace, sessionName))
-    : undefined;
+  // Stagger the one-off banners so the first prompt isn't crowded. The
+  // version-update nag (if stale) takes the first message and bumps the GUI
+  // session link to the second; with no nag, the link shows on the first.
+  // The nag flag is written at SessionStart and stable for the session, so
+  // its presence on message 2 tells us the link hasn't been shown yet.
+  const nag = readVersionNag();
+  const sessionLink =
+    messageCountBefore === 0
+      ? nag ?? formatSessionLink(honchoSessionUrl(config.workspace, sessionName))
+      : messageCountBefore === 1 && nag
+        ? formatSessionLink(honchoSessionUrl(config.workspace, sessionName))
+        : undefined;
 
   // Skip trivial prompts — no context needed for "y", "ok", etc.
   if (shouldSkipContextRetrieval(prompt)) {
@@ -157,7 +198,7 @@ export async function handleUserPrompt(): Promise<void> {
   logCache("miss", "userContext", forceRefresh ? "threshold refresh" : "stale cache");
 
   const fetchResult = await Promise.race([
-    fetchFreshContext(config, prompt).then(r => ({ ok: true as const, ...r })),
+    fetchFreshContext(config, prompt, honcho).then(r => ({ ok: true as const, ...r })),
     new Promise<{ ok: false }>(resolve => setTimeout(() => resolve({ ok: false }), FETCH_TIMEOUT_MS)),
   ]).catch((): { ok: false } => ({ ok: false }));
 
@@ -199,8 +240,7 @@ function serveContext(
   outputContext(peerName, contextParts, sessionLink ? `${sessionLink}\n${visMsg}` : visMsg);
 }
 
-async function fetchFreshContext(config: any, prompt: string): Promise<{ context: any }> {
-  const honcho = new Honcho(getHonchoClientOptions(config));
+async function fetchFreshContext(config: any, prompt: string, honcho: Honcho): Promise<{ context: any }> {
   const observationMode = getObservationMode(config);
 
   // unified: user self-observations — query via userPeer (no target).
