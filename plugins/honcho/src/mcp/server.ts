@@ -23,6 +23,7 @@ import {
   type ReasoningLevel,
   type HonchoEnvironment,
   type ObservationMode,
+  type StatuslineMode,
   getObservationMode,
 } from "../config.js";
 import { honchoSessionUrl } from "../styles.js";
@@ -108,6 +109,7 @@ function handleGetConfig(cwd: string) {
     contextRefresh: cfg.contextRefresh ?? {},
     reasoningLevel: cfg.reasoningLevel ?? "medium",
     observationMode: cfg.observationMode ?? "unified",
+    statusline: cfg.statusline ?? "full",
     localContext: cfg.localContext ?? {},
     enabled: cfg.enabled !== false,
     logging: cfg.logging !== false,
@@ -409,6 +411,21 @@ function handleSetConfig(args: Record<string, unknown>) {
       cfg.observationMode = String(value) as ObservationMode;
       break;
 
+    case "statusline": {
+      const mode = String(value).toLowerCase();
+      if (mode !== "full" && mode !== "minimal" && mode !== "off") {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ success: false, error: "statusline must be one of: full, minimal, off" }, null, 2) }],
+          isError: true,
+        };
+      }
+      previousValue = cfg.statusline ?? "full";
+      cfg.statusline = mode as StatuslineMode;
+      // statusline is a global field — write to root (user-directed action)
+      saveRootField("statusline", cfg.statusline);
+      break;
+    }
+
     case "localContext.maxEntries":
       previousValue = cfg.localContext?.maxEntries;
       if (!cfg.localContext) cfg.localContext = {};
@@ -473,6 +490,7 @@ function handleSetConfig(args: Record<string, unknown>) {
     contextRefresh: cfg.contextRefresh ?? {},
     reasoningLevel: cfg.reasoningLevel ?? "medium",
     observationMode: cfg.observationMode ?? "unified",
+    statusline: cfg.statusline ?? "full",
     localContext: cfg.localContext ?? {},
     enabled: cfg.enabled !== false,
     logging: cfg.logging !== false,

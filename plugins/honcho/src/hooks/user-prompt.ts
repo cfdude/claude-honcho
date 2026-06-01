@@ -17,6 +17,7 @@ import {
 import { logHook, logApiCall, logCache, setLogContext } from "../log.js";
 import { visContextLine, visSkipMessage, addSystemMessage, verboseApiResult, verboseList } from "../visual.js";
 import { honchoSessionUrl } from "../styles.js";
+import { setMemoryState, setSessionLink } from "../state.js";
 
 interface HookInput {
   prompt?: string;
@@ -129,6 +130,7 @@ export async function handleUserPrompt(): Promise<void> {
   }
 
   logHook("user-prompt", `Prompt received (${prompt.length} chars)`);
+  setSessionLink(honchoSessionUrl(config.workspace, sessionName), sessionName, hookInput.session_id);
 
   const honcho = new Honcho(getHonchoClientOptions(config));
 
@@ -159,6 +161,16 @@ export async function handleUserPrompt(): Promise<void> {
   // Track message count for threshold-based refresh
   const messageCountBefore = getMessageCount();
   incrementMessageCount();
+
+  // First prompt of the session: nudge the harness to actively call the honcho
+  // MCP tools (search/chat/get_context) rather than rely only on this passive
+  // injection. Injected once to respect a lean per-turn context budget.
+  if (messageCountBefore === 0) {
+    sessionToolHint =
+      `Honcho memory tools are available — call honcho.search(query) or honcho.get_context to recall ` +
+      `facts about ${config.peerName} across sessions, and honcho.chat(question) for dialectic/` +
+      `psychological questions. Prefer querying over guessing when the user's history is relevant.`;
+  }
   // Stagger the one-off banners so the first prompt isn't crowded. The
   // version-update nag (if stale) takes the first message and bumps the GUI
   // session link to the second; with no nag, the link shows on the first.
@@ -196,6 +208,7 @@ export async function handleUserPrompt(): Promise<void> {
 
   // Cache is stale or threshold reached — try a fresh fetch with timeout
   logCache("miss", "userContext", forceRefresh ? "threshold refresh" : "stale cache");
+  setMemoryState("recalling", undefined, hookInput.session_id);
 
   const fetchResult = await Promise.race([
     fetchFreshContext(config, prompt, honcho).then(r => ({ ok: true as const, ...r })),
@@ -316,11 +329,16 @@ function formatCachedContext(context: any, peerName: string): { parts: string[];
   return { parts, conclusionCount };
 }
 
+// Set once per session (first prompt) to nudge active use of the honcho MCP
+// tools without taxing every turn's context budget.
+let sessionToolHint = "";
+
 function outputContext(peerName: string, contextParts: string[], systemMsg?: string): void {
+  const base = `[Honcho Memory for ${peerName}]: ${contextParts.join(" | ")}`;
   let output: any = {
     hookSpecificOutput: {
       hookEventName: "UserPromptSubmit",
-      additionalContext: `[Honcho Memory for ${peerName}]: ${contextParts.join(" | ")}`,
+      additionalContext: sessionToolHint ? `${base}\n${sessionToolHint}` : base,
     },
   };
   if (systemMsg) {
