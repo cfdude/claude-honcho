@@ -62,9 +62,11 @@ since = (s.get("since", 0) or 0) / 1000
 if ph in TTL and (time.time() - since) <= TTL[ph]:
     phase, detail = ph, (s.get("detail") or "")
 
-# --- static styling: glyph carries state, fixed colors, no motion -----------
-# (Claude Code only redraws the statusLine on conversation activity, never on
-#  an idle timer -- so anything time-based would just look frozen at rest.)
+# --- styling: glyph animates while working, fixed colors, no flashing -------
+# (The statusLine is registered with refreshInterval, so Claude Code re-runs
+#  this script on a timer even at rest. Active phases advance a slow moon-phase
+#  frame off the wall clock; idle stays a single static marker. Only the glyph
+#  shape rotates -- colors are constant, ~1 Hz, well under any flicker threshold.)
 def fg(rgb):
     return f"\x1b[38;2;{rgb[0]};{rgb[1]};{rgb[2]}m"
 
@@ -74,9 +76,10 @@ CALM = (130, 200, 225)   # synced / resting
 WORK = (230, 175, 110)   # memory actively working
 SEP = f"{DIM} · {R}"
 
-# Distinct fixed glyph per state -- a deliberate marker, not a paused spinner.
-GLYPH = {"idle": "◆", "loading": "◐", "recalling": "◑",
-         "saving": "◓", "compacting": "◒", "querying": "✦"}
+# Slow clockwise moon rotation while working; a gentle two-frame pulse for
+# point queries. Frame advances ~1 Hz off the wall clock so each repaint moves.
+SPIN = ["◐", "◓", "◑", "◒"]
+SPARK = ["✦", "✧"]
 LABEL = {"loading": "loading memory", "saving": "saving memory",
          "compacting": "anchoring memory", "recalling": "recalling"}
 
@@ -91,7 +94,9 @@ if phase == "idle":
     else:
         out = f"{glyph} {DIM}{osc8(link_url, 'honcho ↗')}{R}"
 else:
-    glyph = f"{fg(WORK)}{GLYPH.get(phase, '✦')}{R}"
+    frames = SPARK if phase == "querying" else SPIN
+    char = frames[int(time.time()) % len(frames)]
+    glyph = f"{fg(WORK)}{char}{R}"
     label = detail if phase == "querying" else LABEL.get(phase, phase)
     out = f"{glyph}{DIM} honcho{R}{SEP}{fg(WORK)}{label or 'memory'}{R}"
 

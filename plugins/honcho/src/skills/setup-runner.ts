@@ -59,19 +59,35 @@ function installStatusline(): void {
     return;
   }
 
-  const existing = settings.statusLine as { command?: string } | undefined;
+  // refreshInterval re-runs the renderer on a timer so the working glyph can
+  // animate at rest; without it Claude Code only repaints on conversation
+  // activity and the statusLine looks frozen. 1s is the host minimum.
+  const REFRESH = 1;
+  const existing = settings.statusLine as { command?: string; refreshInterval?: number } | undefined;
   if (existing?.command === dest) {
-    console.log(s.dim("statusLine already points at the honcho renderer"));
+    if (existing.refreshInterval === REFRESH) {
+      console.log(s.dim("statusLine already points at the honcho renderer"));
+      return;
+    }
+    // Upgrade an older registration that predates the animated renderer.
+    settings.statusLine = { type: "command", command: dest, refreshInterval: REFRESH };
+    try {
+      writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+      console.log(s.success("statusLine refreshInterval enabled — memory glyph now animates"));
+    } catch (err) {
+      console.log(s.warn(`Could not update settings.json: ${err instanceof Error ? err.message : String(err)}`));
+    }
     return;
   }
   if (existing) {
     console.log(s.warn("A different statusLine is already configured — leaving it untouched."));
     console.log(s.dim("  To use honcho's instead, set settings.json statusLine.command to:"));
     console.log(s.dim(`  ${dest}`));
+    console.log(s.dim(`  and add  "refreshInterval": ${REFRESH}  so the glyph animates.`));
     return;
   }
 
-  settings.statusLine = { type: "command", command: dest };
+  settings.statusLine = { type: "command", command: dest, refreshInterval: REFRESH };
   try {
     if (!existsSync(getClaudeSettingsDir())) mkdirSync(getClaudeSettingsDir(), { recursive: true });
     writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
