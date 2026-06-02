@@ -54,7 +54,7 @@ AskUserQuestion:
     - label: "Message upload"
       description: "Token limits, summarization settings"
     - label: "Statusline"
-      description: "Memory statusLine visibility — full / minimal / off (currently: {resolved.statusline})"
+      description: "Memory statusLine visibility — on / off (currently: {resolved.statusline})"
 ```
 
 Always include current values in the description so the user can see what's set.
@@ -172,10 +172,8 @@ AskUserQuestion:
   question: "Memory statusLine visibility?"
   header: "Statusline"
   options:
-    - label: "full (Recommended)"
+    - label: "on (Recommended)"
       description: "Sync status, clickable session link, and live activity"
-    - label: "minimal"
-      description: "Status badge only — no link"
     - label: "off"
       description: "Hidden"
 ```

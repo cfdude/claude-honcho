@@ -109,7 +109,7 @@ function handleGetConfig(cwd: string) {
     contextRefresh: cfg.contextRefresh ?? {},
     reasoningLevel: cfg.reasoningLevel ?? "medium",
     observationMode: cfg.observationMode ?? "unified",
-    statusline: cfg.statusline ?? "full",
+    statusline: cfg.statusline === "off" ? "off" : "on",
     localContext: cfg.localContext ?? {},
     enabled: cfg.enabled !== false,
     logging: cfg.logging !== false,
@@ -433,13 +433,13 @@ function handleSetConfig(args: Record<string, unknown>) {
 
     case "statusline": {
       const mode = String(value).toLowerCase();
-      if (mode !== "full" && mode !== "minimal" && mode !== "off") {
+      if (mode !== "on" && mode !== "off") {
         return {
-          content: [{ type: "text", text: JSON.stringify({ success: false, error: "statusline must be one of: full, minimal, off" }, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify({ success: false, error: "statusline must be one of: on, off" }, null, 2) }],
           isError: true,
         };
       }
-      previousValue = cfg.statusline ?? "full";
+      previousValue = cfg.statusline ?? "on";
       cfg.statusline = mode as StatuslineMode;
       // statusline is a global field — write to root (user-directed action)
       saveRootField("statusline", cfg.statusline);
@@ -510,7 +510,7 @@ function handleSetConfig(args: Record<string, unknown>) {
     contextRefresh: cfg.contextRefresh ?? {},
     reasoningLevel: cfg.reasoningLevel ?? "medium",
     observationMode: cfg.observationMode ?? "unified",
-    statusline: cfg.statusline ?? "full",
+    statusline: cfg.statusline === "off" ? "off" : "on",
     localContext: cfg.localContext ?? {},
     enabled: cfg.enabled !== false,
     logging: cfg.logging !== false,

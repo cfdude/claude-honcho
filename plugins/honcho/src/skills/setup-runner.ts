@@ -43,7 +43,7 @@ function installStatusline(): void {
   // Default visibility to "full" only on first run — respect an existing choice.
   try {
     const raw = existsSync(getConfigPath()) ? JSON.parse(readFileSync(getConfigPath(), "utf-8")) : {};
-    if (raw.statusline === undefined) saveRootField("statusline", "full");
+    if (raw.statusline === undefined) saveRootField("statusline", "on");
   } catch {
     // leave config as-is; the renderer defaults to "full" when the key is absent
   }

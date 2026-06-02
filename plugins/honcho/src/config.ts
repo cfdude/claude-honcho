@@ -35,7 +35,7 @@ export type ReasoningLevel = "minimal" | "low" | "medium" | "high" | "max";
 
 export type SessionStrategy = "per-directory" | "git-branch" | "chat-instance";
 
-export type StatuslineMode = "full" | "minimal" | "off";
+export type StatuslineMode = "on" | "off";
 
 export type HonchoEnvironment = "production" | "local";
 
@@ -184,7 +184,7 @@ interface HonchoFileConfig {
   reasoningLevel?: ReasoningLevel;
   /** Observation mode (default: "unified") */
   observationMode?: ObservationMode;
-  /** Memory statusLine visibility: "full" (default) · "minimal" · "off" */
+  /** Memory statusLine visibility: "on" (default) · "off" */
   statusline?: StatuslineMode;
   hosts?: Record<string, HostConfig>;
   /** When true, flat workspace/aiPeer fields apply to ALL hosts,
@@ -225,7 +225,7 @@ export interface HonchoCLAUDEConfig {
    * "directional": this AI keeps its own per-AI view of the user.
    */
   observationMode?: ObservationMode;
-  /** Memory statusLine visibility: "full" (default) · "minimal" · "off" */
+  /** Memory statusLine visibility: "on" (default) · "off" */
   statusline?: StatuslineMode;
   /** Token-based upload limits */
   messageUpload?: MessageUploadConfig;

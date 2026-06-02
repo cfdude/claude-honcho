@@ -74,8 +74,7 @@ runner also installs the memory statusLine: it copies the renderer to
 `~/.honcho/honcho-statusline.sh` and registers it in `~/.claude/settings.json`
 (only when no `statusLine` is already configured — an existing one is left
 untouched and the path is printed for manual use). Toggle visibility later with
-the `statusline` key in `~/.honcho/config.json`: `full` (default), `minimal`, or
-`off`.
+the `statusline` key in `~/.honcho/config.json`: `on` (default) or `off`.
 
 If it fails, help the user troubleshoot:
 - Authentication error: key may be invalid, get a new one from https://app.honcho.dev

@@ -10,7 +10,7 @@
 # calls) animates while it happens.
 #
 # Visibility via "statusline" in ~/.honcho/config.json:
-#   "full" (default) · "minimal" (badge only) · "off" (hidden)
+#   "on" (default) · "off" (hidden)
 HONCHO_DIR="$HOME/.honcho"
 # Read the statusLine JSON Claude pipes in, but never block: time out fast if
 # stdin has no EOF, so the bar can't freeze.
@@ -43,10 +43,7 @@ def keyed(base):
     return f"{base}.json"
 
 # --- visibility toggle ------------------------------------------------------
-mode = (load("config.json").get("statusline") or "full").lower()
-if mode not in ("full", "minimal", "off"):
-    mode = "full"
-if mode == "off":
+if (load("config.json").get("statusline") or "on").lower() == "off":
     sys.exit(0)
 
 # --- connection + session link ----------------------------------------------
@@ -89,7 +86,7 @@ def osc8(url, text):                       # clickable link, no raw URL shown
 if phase == "idle":
     color = CALM if synced else (120, 120, 128)
     glyph = f"{fg(color)}{'◆' if synced else '◇'}{R}"
-    if mode == "minimal" or not link_url:
+    if not link_url:
         out = f"{glyph}{DIM} honcho{R}"
     else:
         out = f"{glyph} {DIM}{osc8(link_url, 'honcho ↗')}{R}"
