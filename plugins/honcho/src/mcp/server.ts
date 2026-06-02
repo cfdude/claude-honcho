@@ -166,6 +166,26 @@ function handleGetConfig(cwd: string) {
     }
   }
 
+  // HONCHO_API_KEY is omitted from ENV_SHADOW_MAP and handled specially: an API
+  // key selects the Honcho *environment*, so when the env var overrides the
+  // configured key (resolveConfig: env wins, matching standard env>config
+  // precedence) every read and write silently routes to a different environment
+  // than config.json names. That's far more surprising than a normal override,
+  // so surface it whenever the env var is set — loudly on a mismatch.
+  const envApiKey = process.env.HONCHO_API_KEY;
+  if (envApiKey && rawFile.apiKey) {
+    const mask = (k: string) => `${k.slice(0, 10)}…${k.slice(-4)}`;
+    if (envApiKey !== rawFile.apiKey) {
+      warnings.push(
+        `HONCHO_API_KEY env var (${mask(envApiKey)}) overrides config.json apiKey (${mask(rawFile.apiKey)}) and is the key actually in use. ` +
+        `An API key selects the Honcho environment, so reads/writes go to the env var's environment, NOT the one config.json names. ` +
+        `Unset HONCHO_API_KEY in your shell to use config.json's key.`
+      );
+    } else {
+      warnings.push(`apiKey is also set via HONCHO_API_KEY env var (identical value). The env var takes precedence at runtime.`);
+    }
+  }
+
   // Check for legacy fields without hosts block
   if (cfgExists && !rawFile.hosts) {
     warnings.push("Config uses legacy flat fields. Consider running /honcho:config to migrate to hosts block.");
