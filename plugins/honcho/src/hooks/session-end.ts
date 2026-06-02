@@ -11,7 +11,7 @@ import {
   chunkContent,
 } from "../cache.js";
 import { playCooldown } from "../spinner.js";
-import { setMemoryState, clearSessionFiles } from "../state.js";
+import { clearSessionFiles } from "../state.js";
 import { logHook, logApiCall, setLogContext } from "../log.js";
 
 
@@ -240,7 +240,6 @@ export async function handleSessionEnd(): Promise<void> {
   // so we don't waste budget on cosmetics before critical work.
   // =========================================================
   try {
-    setMemoryState("saving", undefined, hookInput.session_id);
     const honcho = new Honcho(getHonchoClientOptions(config));
 
     const [session, userPeer, aiPeer] = await Promise.all([
