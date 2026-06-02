@@ -6,6 +6,7 @@ All notable changes to claude-honcho will be documented in this file.
 
 ### Added
 
+- Per-host `apiKey` field in `hosts.<name>` — takes precedence over root `apiKey`, still overridden by `HONCHO_API_KEY` env var. Lets different integrations authenticate against different Honcho orgs from one config file.
 - Version-update nag: warns on first prompt when the installed plugin is behind the published version (checks for updates at most once a day; silent on failure).
 
 ## [0.2.4] - 2026-04-01
