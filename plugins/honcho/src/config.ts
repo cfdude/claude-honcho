@@ -306,19 +306,22 @@ function resolveConfig(raw: HonchoFileConfig, host: HonchoHost): HonchoCLAUDECon
   let workspace: string;
   let aiPeer: string;
 
+  // HONCHO_WORKSPACE is honored as the highest-priority, per-invocation runtime
+  // override in every branch. This lets a single directory/session target a
+  // specific workspace -- e.g. set per-project via Claude Code's
+  // .claude/settings.local.json `env`, or per-shell via `export` -- without
+  // changing the persisted default for other directories. saveConfig() does not
+  // materialize this override to disk (see workspaceForSave there).
   if (raw.globalOverride === true) {
     // Global override: flat fields apply to ALL hosts
-    workspace = raw.workspace ?? DEFAULT_WORKSPACE[host];
+    workspace = process.env.HONCHO_WORKSPACE ?? raw.workspace ?? DEFAULT_WORKSPACE[host];
     aiPeer = raw.aiPeer ?? hostBlock?.aiPeer ?? DEFAULT_AI_PEER[host];
   } else if (hostBlock) {
-    // Host-specific block takes precedence
-    workspace = hostBlock.workspace ?? DEFAULT_WORKSPACE[host];
+    // Host-specific block takes precedence (env override still wins)
+    workspace = process.env.HONCHO_WORKSPACE ?? hostBlock.workspace ?? DEFAULT_WORKSPACE[host];
     aiPeer = hostBlock.aiPeer ?? DEFAULT_AI_PEER[host];
   } else {
     // Legacy flat-field fallback for configs written before hosts block.
-    // Env var is respected here (matching main-branch behavior) so it gets
-    // captured into the hosts block on first saveConfig(), after which the
-    // env var becomes redundant and is safely ignored.
     workspace = process.env.HONCHO_WORKSPACE ?? raw.workspace ?? DEFAULT_WORKSPACE[host];
     if (host === "cursor") {
       aiPeer = raw.cursorPeer ?? DEFAULT_AI_PEER["cursor"];
@@ -475,7 +478,16 @@ export function saveConfig(config: HonchoCLAUDEConfig): void {
   // Only persist workspace/aiPeer to host block if the block already had them
   // or if they differ from the default for this host.  This prevents root
   // fallback values from being materialized into host overrides.
-  setHostIfExplicit("workspace", config.workspace, existing.workspace ?? DEFAULT_WORKSPACE[host]);
+  //
+  // Don't persist an env-only HONCHO_WORKSPACE override: when it's set, the
+  // resolved config.workspace came from the env (a per-invocation override), so
+  // writing it here would make it sticky for other directories/sessions that
+  // don't set it. Preserve whatever was already on disk instead. (Same pattern
+  // as HONCHO_ENABLED / HONCHO_LOGGING below.)
+  const workspaceForSave = process.env.HONCHO_WORKSPACE
+    ? existingHost.workspace
+    : config.workspace;
+  setHostIfExplicit("workspace", workspaceForSave, existing.workspace ?? DEFAULT_WORKSPACE[host]);
   setHostIfExplicit("aiPeer", config.aiPeer, existing.aiPeer ?? DEFAULT_AI_PEER[host]);
 
   // Don't persist env-only overrides to the host block.
