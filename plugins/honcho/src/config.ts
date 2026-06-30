@@ -1,5 +1,5 @@
 import { homedir } from "os";
-import { join, basename } from "path";
+import { join, basename, dirname } from "path";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { captureGitState } from "./git.js";
 import { getInstanceIdForCwd, getClaudeInstanceId, getLastActiveCwd } from "./cache.js";
@@ -765,4 +765,29 @@ export function setEndpoint(environment?: HonchoEnvironment, baseUrl?: string): 
   if (environment && !VALID_ENVIRONMENTS.has(environment)) return;
   config.endpoint = { environment, baseUrl };
   saveConfig(config);
+}
+
+/**
+ * Reports which layer of the workspace resolution chain "won" for the given cwd.
+ * Precedence mirrors loadConfig: env > project (.honcho.json walk-up) > global.
+ * This function is purely observational — it does NOT alter what loadConfig returns.
+ */
+export function getWorkspaceProvenance(cwd: string): { workspace: string; source: "env" | "project" | "global"; path?: string } {
+  const cfg = loadConfig("claude_code", cwd);
+  const workspace = cfg?.workspace ?? "";
+  if (process.env.HONCHO_WORKSPACE) {
+    return { workspace, source: "env" };
+  }
+  // Walk up from cwd to find the nearest .honcho.json with a usable workspace
+  let dir = cwd;
+  const stop = homedir();
+  while (dir !== stop) {
+    if (existsSync(join(dir, ".honcho.json")) && getProjectWorkspace(dir)) {
+      return { workspace, source: "project", path: dir };
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return { workspace, source: "global" };
 }

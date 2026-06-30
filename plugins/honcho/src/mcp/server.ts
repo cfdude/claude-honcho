@@ -18,6 +18,7 @@ import {
   getEndpointInfo,
   getKnownHosts,
   setDetectedHost,
+  getWorkspaceProvenance,
   type HonchoCLAUDEConfig,
   type SessionStrategy,
   type ReasoningLevel,
@@ -83,7 +84,7 @@ function renderCard(rows: [string, string][], title: string): string {
 }
 
 function handleGetConfig(cwd: string) {
-  const cfg = loadConfig();
+  const cfg = loadConfig("claude_code", cwd);
   const host = getDetectedHost();
   const cfgPath = getConfigPath();
   const cfgExists = configExists();
@@ -222,10 +223,12 @@ function handleGetConfig(cwd: string) {
     ["obs mode", cfg.observationMode ?? "unified"],
   ], "current honcho config") : null;
 
+  const workspaceSource = getWorkspaceProvenance(cwd);
+
   return {
     content: [{
       type: "text",
-      text: JSON.stringify({ card, resolved, current, host: hostInfo, warnings, configPath: cfgPath, configExists: cfgExists }, null, 2),
+      text: JSON.stringify({ card, resolved, current, host: hostInfo, warnings, configPath: cfgPath, configExists: cfgExists, workspaceSource }, null, 2),
     }],
   };
 }

@@ -3,7 +3,7 @@ import { test, expect, afterEach } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveConfig, loadConfigFromEnv } from "./config.js";
+import { resolveConfig, loadConfigFromEnv, getWorkspaceProvenance } from "./config.js";
 
 const envBackup = process.env.HONCHO_WORKSPACE;
 const keyBackup = process.env.HONCHO_API_KEY;
@@ -60,5 +60,29 @@ test("env-only path (no config file): loadConfigFromEnv honors .honcho.json", ()
   process.env.HONCHO_API_KEY = "k"; // loadConfigFromEnv returns null without an apiKey
   const dir = repoWith("highway");
   expect(loadConfigFromEnv("claude_code", dir)?.workspace).toBe("highway");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("provenance reports 'project' with the file's directory", () => {
+  delete process.env.HONCHO_WORKSPACE;
+  const dir = repoWith("highway");
+  const p = getWorkspaceProvenance(dir);
+  expect(p.source).toBe("project");
+  expect(p.workspace).toBe("highway");
+  expect(p.path).toBe(dir);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("provenance reports 'env' when HONCHO_WORKSPACE is set", () => {
+  process.env.HONCHO_WORKSPACE = "envwins";
+  const dir = repoWith("highway");
+  expect(getWorkspaceProvenance(dir).source).toBe("env");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("provenance reports 'global' with no env and no file", () => {
+  delete process.env.HONCHO_WORKSPACE;
+  const dir = mkdtempSync(join(tmpdir(), "honcho-cfg-"));
+  expect(getWorkspaceProvenance(dir).source).toBe("global");
   rmSync(dir, { recursive: true, force: true });
 });
