@@ -2,7 +2,8 @@ import { homedir } from "os";
 import { join, basename } from "path";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { captureGitState } from "./git.js";
-import { getInstanceIdForCwd, getClaudeInstanceId } from "./cache.js";
+import { getInstanceIdForCwd, getClaudeInstanceId, getLastActiveCwd } from "./cache.js";
+import { getProjectWorkspace } from "./project-config.js";
 
 function sanitizeForSessionName(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9-_]/g, "-");
@@ -276,22 +277,23 @@ export function configExists(): boolean {
  * Load config from file, with environment variable fallbacks.
  * Host-specific fields are resolved from the hosts block in the config file.
  */
-export function loadConfig(host?: HonchoHost): HonchoCLAUDEConfig | null {
+export function loadConfig(host?: HonchoHost, cwd?: string): HonchoCLAUDEConfig | null {
   const resolvedHost = host ?? getDetectedHost();
+  const resolvedCwd = cwd ?? getLastActiveCwd() ?? process.cwd();
 
   if (configExists()) {
     try {
       const content = readFileSync(CONFIG_FILE, "utf-8");
       const raw = JSON.parse(content) as HonchoFileConfig;
-      return resolveConfig(raw, resolvedHost);
+      return resolveConfig(raw, resolvedHost, resolvedCwd);
     } catch {
       // Fall through to env-only config
     }
   }
-  return loadConfigFromEnv(resolvedHost);
+  return loadConfigFromEnv(resolvedHost, resolvedCwd);
 }
 
-function resolveConfig(raw: HonchoFileConfig, host: HonchoHost): HonchoCLAUDEConfig | null {
+export function resolveConfig(raw: HonchoFileConfig, host: HonchoHost, cwd: string): HonchoCLAUDEConfig | null {
   const hostBlock = raw.hosts?.[host]
     ?? raw.hosts?.[host.replace(/_/g, "-")]
     ?? raw.hosts?.[host.replace(/-/g, "_")];
@@ -301,6 +303,10 @@ function resolveConfig(raw: HonchoFileConfig, host: HonchoHost): HonchoCLAUDECon
   if (!apiKey) return null;
 
   const peerName = raw.peerName || process.env.HONCHO_PEER_NAME || process.env.USER || process.env.USERNAME || "user";
+
+  // Project-level workspace (.honcho.json) sits between the env override and the
+  // global default, in every branch. See docs/superpowers/specs/2026-06-30-*.
+  const projectWorkspace = getProjectWorkspace(cwd);
 
   // Resolve host-specific fields
   let workspace: string;
@@ -314,15 +320,15 @@ function resolveConfig(raw: HonchoFileConfig, host: HonchoHost): HonchoCLAUDECon
   // materialize this override to disk (see workspaceForSave there).
   if (raw.globalOverride === true) {
     // Global override: flat fields apply to ALL hosts
-    workspace = process.env.HONCHO_WORKSPACE ?? raw.workspace ?? DEFAULT_WORKSPACE[host];
+    workspace = process.env.HONCHO_WORKSPACE ?? projectWorkspace ?? raw.workspace ?? DEFAULT_WORKSPACE[host];
     aiPeer = raw.aiPeer ?? hostBlock?.aiPeer ?? DEFAULT_AI_PEER[host];
   } else if (hostBlock) {
     // Host-specific block takes precedence (env override still wins)
-    workspace = process.env.HONCHO_WORKSPACE ?? hostBlock.workspace ?? DEFAULT_WORKSPACE[host];
+    workspace = process.env.HONCHO_WORKSPACE ?? projectWorkspace ?? hostBlock.workspace ?? DEFAULT_WORKSPACE[host];
     aiPeer = hostBlock.aiPeer ?? DEFAULT_AI_PEER[host];
   } else {
     // Legacy flat-field fallback for configs written before hosts block.
-    workspace = process.env.HONCHO_WORKSPACE ?? raw.workspace ?? DEFAULT_WORKSPACE[host];
+    workspace = process.env.HONCHO_WORKSPACE ?? projectWorkspace ?? raw.workspace ?? DEFAULT_WORKSPACE[host];
     if (host === "cursor") {
       aiPeer = raw.cursorPeer ?? DEFAULT_AI_PEER["cursor"];
     } else {
@@ -361,7 +367,7 @@ function resolveConfig(raw: HonchoFileConfig, host: HonchoHost): HonchoCLAUDECon
  * Returns null if HONCHO_API_KEY is not set.
  * HONCHO_WORKSPACE is respected here (no file config to conflict with).
  */
-export function loadConfigFromEnv(host?: HonchoHost): HonchoCLAUDEConfig | null {
+export function loadConfigFromEnv(host?: HonchoHost, cwd?: string): HonchoCLAUDEConfig | null {
   const apiKey = process.env.HONCHO_API_KEY;
   if (!apiKey) {
     return null;
@@ -369,7 +375,8 @@ export function loadConfigFromEnv(host?: HonchoHost): HonchoCLAUDEConfig | null 
 
   const resolvedHost = host ?? getDetectedHost();
   const peerName = process.env.HONCHO_PEER_NAME || process.env.USER || process.env.USERNAME || "user";
-  const workspace = process.env.HONCHO_WORKSPACE || DEFAULT_WORKSPACE[resolvedHost];
+  const projectWorkspace = cwd ? getProjectWorkspace(cwd) : null;
+  const workspace = process.env.HONCHO_WORKSPACE || projectWorkspace || DEFAULT_WORKSPACE[resolvedHost];
   const hostPeerEnv = resolvedHost === "cursor"
     ? process.env.HONCHO_CURSOR_PEER
     : process.env.HONCHO_CLAUDE_PEER;
