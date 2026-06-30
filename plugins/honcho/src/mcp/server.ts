@@ -234,6 +234,17 @@ function handleGetConfig(cwd: string) {
 }
 
 // ============================================
+// set_config helpers
+// ============================================
+
+export function setConfigWorkspaceWarning(field: string, globalOverride: boolean): string | null {
+  if (field === "workspace" && globalOverride) {
+    return "globalOverride is on, so this change writes to the per-host block but resolution reads the global default — it will NOT take effect. For a per-repo workspace, create a .honcho.json ({\"workspace\":\"...\"}) in the repo instead. To change the global default for ALL repos, edit ~/.honcho/config.json directly.";
+  }
+  return null;
+}
+
+// ============================================
 // set_config handler
 // ============================================
 
@@ -287,6 +298,12 @@ function handleSetConfig(args: Record<string, unknown>) {
   const shadowEnv = ENV_SHADOW_MAP[field];
   if (shadowEnv && process.env[shadowEnv]) {
     warnings.push(`${field} is shadowed by env var ${shadowEnv}="${process.env[shadowEnv]}". File will be updated but env var takes precedence at runtime.`);
+  }
+
+  // Warn when workspace write is shadowed by globalOverride
+  if (field === "workspace") {
+    const wsWarn = setConfigWorkspaceWarning(field, cfg?.globalOverride === true);
+    if (wsWarn) warnings.push(wsWarn);
   }
 
   // Apply the change
