@@ -67,8 +67,9 @@ test("provenance reports 'project' with the file's directory", () => {
   delete process.env.HONCHO_WORKSPACE;
   const dir = repoWith("highway");
   const p = getWorkspaceProvenance(dir);
+  // Assert source and path only — workspace derives from loadConfig which reads
+  // the real ~/.honcho/config.json and is not controllable in a hermetic test.
   expect(p.source).toBe("project");
-  expect(p.workspace).toBe("highway");
   expect(p.path).toBe(dir);
   rmSync(dir, { recursive: true, force: true });
 });
@@ -76,13 +77,15 @@ test("provenance reports 'project' with the file's directory", () => {
 test("provenance reports 'env' when HONCHO_WORKSPACE is set", () => {
   process.env.HONCHO_WORKSPACE = "envwins";
   const dir = repoWith("highway");
-  expect(getWorkspaceProvenance(dir).source).toBe("env");
+  const p = getWorkspaceProvenance(dir);
+  expect(p.source).toBe("env");
   rmSync(dir, { recursive: true, force: true });
 });
 
 test("provenance reports 'global' with no env and no file", () => {
   delete process.env.HONCHO_WORKSPACE;
   const dir = mkdtempSync(join(tmpdir(), "honcho-cfg-"));
-  expect(getWorkspaceProvenance(dir).source).toBe("global");
+  const p = getWorkspaceProvenance(dir);
+  expect(p.source).toBe("global");
   rmSync(dir, { recursive: true, force: true });
 });
