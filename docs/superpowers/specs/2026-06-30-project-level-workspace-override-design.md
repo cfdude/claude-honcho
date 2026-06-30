@@ -99,6 +99,11 @@ helper) wired at the two call sites that already know the directory:
 tree), so switching projects resolves correctly. When `cwd` is omitted (callers
 that have no directory), behavior is exactly as today.
 
+Both resolution paths consult the project workspace so the precedence invariant
+holds universally: `resolveConfig` (when `~/.honcho/config.json` exists) **and**
+`loadConfigFromEnv` (the no-config-file fallback). Without this, a `.honcho.json`
+repo on a machine lacking the config file would silently ignore the override.
+
 ### Secondary fixes (same bug surface, in scope)
 
 - **`get_config` provenance.** `get_config` reports *where* the workspace came

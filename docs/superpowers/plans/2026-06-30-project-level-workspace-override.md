@@ -16,7 +16,8 @@
 - `.honcho.json` reads only the `workspace` key for now; unknown keys ignored (forward-compatible).
 - A missing/empty/malformed/unreadable `.honcho.json` resolves to "no override" and MUST NEVER throw.
 - Walk-up stops at `stopDir` (default `os.homedir()`): a `.honcho.json` at `stopDir` itself is ignored.
-- No change to the 15 existing `loadConfig()` callers — `cwd` defaults inside `loadConfig`.
+- No change to the existing `loadConfig()` callers (~24, all call with 0–1 args) — the new `cwd` is optional and defaults inside `loadConfig`.
+- The precedence invariant (env > project > global) MUST hold on BOTH config paths: `resolveConfig` (config file present) AND `loadConfigFromEnv` (no config file). Both consult `getProjectWorkspace(cwd)`.
 - `set_config` MUST NOT silently mutate the root `workspace` (that is the global default for ~300 repos).
 - All work on `plugins/honcho/`; tests via `bun test` run from `plugins/honcho/`.
 - `.honcho.json` must be in the global gitignore; never tracked.
@@ -99,6 +100,19 @@ test("returns null when workspace key is missing or empty", () => {
   expect(getProjectWorkspace(dir, root)).toBeNull();
   rmSync(root, { recursive: true, force: true });
 });
+
+test("a malformed child .honcho.json stops the walk (does NOT leak the parent's value)", () => {
+  const root = tmp();
+  const repo = join(root, "repo");
+  const sub = join(repo, "sub");
+  mkdirSync(sub, { recursive: true });
+  writeFileSync(join(repo, ".honcho.json"), JSON.stringify({ workspace: "highway" }));
+  writeFileSync(join(sub, ".honcho.json"), "{ broken");
+  // Deliberate semantics: the nearest file wins; an unusable nearest file
+  // resolves to null rather than silently inheriting a parent's workspace.
+  expect(getProjectWorkspace(sub, root)).toBeNull();
+  rmSync(root, { recursive: true, force: true });
+});
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -150,7 +164,7 @@ export function getProjectWorkspace(cwd: string, stopDir: string = homedir()): s
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd plugins/honcho && bun test src/project-config.test.ts`
-Expected: PASS (6 tests).
+Expected: PASS (7 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -169,22 +183,25 @@ git commit -m "feat(honcho): add getProjectWorkspace walk-up discovery for .honc
 
 **Interfaces:**
 - Consumes: `getProjectWorkspace(cwd, stopDir?)` from Task 1; existing `getLastActiveCwd()` from `./cache.js`.
-- Produces: `loadConfig(host?: HonchoHost, cwd?: string)` — `cwd` defaults to `getLastActiveCwd() ?? process.cwd()`. `resolveConfig(raw, host, cwd)` now consults the project workspace.
+- Produces: `loadConfig(host?: HonchoHost, cwd?: string)` — `cwd` defaults to `getLastActiveCwd() ?? process.cwd()`; threads `cwd` to BOTH `resolveConfig` and `loadConfigFromEnv`. `resolveConfig` is **exported** as `resolveConfig(raw, host, cwd)` (so it can be unit-tested hermetically). `loadConfigFromEnv(host?, cwd?)` also consults the project workspace.
 
 - [ ] **Step 1: Write the failing tests**
+
+Tests call the **exported `resolveConfig` directly** with synthetic `raw` configs — no dependency on the real `~/.honcho/config.json`, and explicit coverage of all three branches (`globalOverride`, hostBlock, legacy) plus the env-only path.
 
 ```typescript
 // plugins/honcho/src/config.test.ts
 import { test, expect, afterEach } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig } from "./config.js";
+import { resolveConfig, loadConfigFromEnv } from "./config.js";
 
 const envBackup = process.env.HONCHO_WORKSPACE;
+const keyBackup = process.env.HONCHO_API_KEY;
 afterEach(() => {
-  if (envBackup === undefined) delete process.env.HONCHO_WORKSPACE;
-  else process.env.HONCHO_WORKSPACE = envBackup;
+  if (envBackup === undefined) delete process.env.HONCHO_WORKSPACE; else process.env.HONCHO_WORKSPACE = envBackup;
+  if (keyBackup === undefined) delete process.env.HONCHO_API_KEY; else process.env.HONCHO_API_KEY = keyBackup;
 });
 
 function repoWith(workspace: string): string {
@@ -192,31 +209,49 @@ function repoWith(workspace: string): string {
   writeFileSync(join(dir, ".honcho.json"), JSON.stringify({ workspace }));
   return dir;
 }
+function emptyDir(): string { return mkdtempSync(join(tmpdir(), "honcho-cfg-")); }
+const BASE = { apiKey: "k", peerName: "p" };
 
-test(".honcho.json workspace overrides the global default", () => {
+test("globalOverride branch: .honcho.json overrides root; env beats it; absent falls back", () => {
+  const withFile = repoWith("highway");
+  const without = emptyDir();
+  const raw = { ...BASE, globalOverride: true, workspace: "personal" } as any;
   delete process.env.HONCHO_WORKSPACE;
-  const dir = repoWith("highway");
-  const cfg = loadConfig("claude_code", dir);
-  expect(cfg?.workspace).toBe("highway");
-  rmSync(dir, { recursive: true, force: true });
-});
-
-test("HONCHO_WORKSPACE env beats the .honcho.json project value", () => {
+  expect(resolveConfig(raw, "claude_code", withFile)?.workspace).toBe("highway");
+  expect(resolveConfig(raw, "claude_code", without)?.workspace).toBe("personal");
   process.env.HONCHO_WORKSPACE = "envwins";
-  const dir = repoWith("highway");
-  const cfg = loadConfig("claude_code", dir);
-  expect(cfg?.workspace).toBe("envwins");
-  rmSync(dir, { recursive: true, force: true });
+  expect(resolveConfig(raw, "claude_code", withFile)?.workspace).toBe("envwins");
+  rmSync(withFile, { recursive: true, force: true });
+  rmSync(without, { recursive: true, force: true });
 });
 
-test("no .honcho.json leaves the global default unchanged", () => {
+test("hostBlock branch: .honcho.json overrides host default; absent falls back", () => {
   delete process.env.HONCHO_WORKSPACE;
-  const dir = mkdtempSync(join(tmpdir(), "honcho-cfg-"));
-  const withFile = loadConfig("claude_code", repoWith("highway"));
-  const without = loadConfig("claude_code", dir);
-  // The dir without a file must NOT resolve to highway (it gets the global default).
-  expect(without?.workspace).not.toBe("highway");
-  expect(withFile?.workspace).toBe("highway");
+  const raw = { ...BASE, hosts: { claude_code: { workspace: "hostdefault" } } } as any;
+  const withFile = repoWith("highway");
+  const without = emptyDir();
+  expect(resolveConfig(raw, "claude_code", withFile)?.workspace).toBe("highway");
+  expect(resolveConfig(raw, "claude_code", without)?.workspace).toBe("hostdefault");
+  rmSync(withFile, { recursive: true, force: true });
+  rmSync(without, { recursive: true, force: true });
+});
+
+test("legacy flat branch: .honcho.json overrides flat workspace; absent falls back", () => {
+  delete process.env.HONCHO_WORKSPACE;
+  const raw = { ...BASE, workspace: "legacy" } as any;
+  const withFile = repoWith("highway");
+  const without = emptyDir();
+  expect(resolveConfig(raw, "claude_code", withFile)?.workspace).toBe("highway");
+  expect(resolveConfig(raw, "claude_code", without)?.workspace).toBe("legacy");
+  rmSync(withFile, { recursive: true, force: true });
+  rmSync(without, { recursive: true, force: true });
+});
+
+test("env-only path (no config file): loadConfigFromEnv honors .honcho.json", () => {
+  delete process.env.HONCHO_WORKSPACE;
+  process.env.HONCHO_API_KEY = "k"; // loadConfigFromEnv returns null without an apiKey
+  const dir = repoWith("highway");
+  expect(loadConfigFromEnv("claude_code", dir)?.workspace).toBe("highway");
   rmSync(dir, { recursive: true, force: true });
 });
 ```
@@ -224,18 +259,18 @@ test("no .honcho.json leaves the global default unchanged", () => {
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `cd plugins/honcho && bun test src/config.test.ts`
-Expected: FAIL — `cfg?.workspace` is the global default (not `highway`) because `resolveConfig` does not yet consult `.honcho.json`.
+Expected: FAIL — either `resolveConfig`/`loadConfigFromEnv` are not exported / don't accept `cwd`, or they ignore `.honcho.json` so the override assertions return the default instead of `highway`.
 
 - [ ] **Step 3: Implement the threading**
 
-In `plugins/honcho/src/config.ts`, add to the imports from `./cache.js` (existing line ~5) the `getLastActiveCwd` symbol, and import the project helper:
+In `plugins/honcho/src/config.ts`, add `getLastActiveCwd` to the existing `./cache.js` import (line ~5) and import the project helper:
 
 ```typescript
 import { getInstanceIdForCwd, getClaudeInstanceId, getLastActiveCwd } from "./cache.js";
 import { getProjectWorkspace } from "./project-config.js";
 ```
 
-Change `loadConfig` (line ~279) to accept and forward `cwd`:
+Change `loadConfig` (line ~279) to accept and forward `cwd` to BOTH resolution paths:
 
 ```typescript
 export function loadConfig(host?: HonchoHost, cwd?: string): HonchoCLAUDEConfig | null {
@@ -251,14 +286,28 @@ export function loadConfig(host?: HonchoHost, cwd?: string): HonchoCLAUDEConfig 
       // Fall through to env-only config
     }
   }
-  return loadConfigFromEnv(resolvedHost);
+  return loadConfigFromEnv(resolvedHost, resolvedCwd);
 }
 ```
 
-Change `resolveConfig` signature and the three workspace assignments (lines ~294-331) to consult the project workspace between env and the existing default:
+Thread the project workspace into `loadConfigFromEnv` (line ~364) so the precedence invariant also holds with no config file:
 
 ```typescript
-function resolveConfig(raw: HonchoFileConfig, host: HonchoHost, cwd: string): HonchoCLAUDEConfig | null {
+export function loadConfigFromEnv(host?: HonchoHost, cwd?: string): HonchoCLAUDEConfig | null {
+  const apiKey = process.env.HONCHO_API_KEY;
+  if (!apiKey) return null;
+  const resolvedHost = host ?? getDetectedHost();
+  // ... existing peerName etc ...
+  const projectWorkspace = cwd ? getProjectWorkspace(cwd) : null;
+  const workspace = process.env.HONCHO_WORKSPACE || projectWorkspace || DEFAULT_WORKSPACE[resolvedHost];
+  // ... rest unchanged ...
+}
+```
+
+**Export** `resolveConfig` and add the `cwd` param + the project layer in all three branches:
+
+```typescript
+export function resolveConfig(raw: HonchoFileConfig, host: HonchoHost, cwd: string): HonchoCLAUDEConfig | null {
   const hostBlock = raw.hosts?.[host]
     ?? raw.hosts?.[host.replace(/_/g, "-")]
     ?? raw.hosts?.[host.replace(/-/g, "_")];
@@ -297,7 +346,7 @@ function resolveConfig(raw: HonchoFileConfig, host: HonchoHost, cwd: string): Ho
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd plugins/honcho && bun test src/config.test.ts`
-Expected: PASS (3 tests). Also run `bun test` (whole dir) — Task 1 tests still pass.
+Expected: PASS (4 tests — three branches + env-only path). Also run `bun test` (whole dir) — Task 1 tests still pass.
 
 - [ ] **Step 5: Commit**
 
@@ -418,7 +467,7 @@ git commit -m "feat(honcho): get_config reports workspace provenance (env/projec
 - Test: `plugins/honcho/src/server-setconfig.test.ts` (create — exercises the warning helper)
 
 **Interfaces:**
-- Produces: a pure helper `setConfigWorkspaceWarning(field: string, raw: HonchoFileConfig): string | null` returning a warning string when `field === "workspace"` and `raw.globalOverride === true` (the write to `hosts.<host>` will be shadowed), else `null`. `handleSetConfig` includes it in `warnings`.
+- Produces: a pure helper `setConfigWorkspaceWarning(field: string, globalOverride: boolean): string | null` returning a warning string when `field === "workspace"` and `globalOverride === true` (the write to `hosts.<host>` will be shadowed), else `null`. Takes a `boolean` (not the raw config) — no type import needed; `handleSetConfig` passes `cfg.globalOverride === true` (the resolved `cfg` already carries `globalOverride`, copied at `config.ts:353`). `handleSetConfig` includes the result in `warnings`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -428,16 +477,16 @@ import { test, expect } from "bun:test";
 import { setConfigWorkspaceWarning } from "./mcp/server.js";
 
 test("warns when setting workspace under globalOverride", () => {
-  const w = setConfigWorkspaceWarning("workspace", { globalOverride: true } as any);
+  const w = setConfigWorkspaceWarning("workspace", true);
   expect(w).toContain(".honcho.json");
 });
 
-test("no warning for workspace when globalOverride is not set", () => {
-  expect(setConfigWorkspaceWarning("workspace", {} as any)).toBeNull();
+test("no warning for workspace when globalOverride is off", () => {
+  expect(setConfigWorkspaceWarning("workspace", false)).toBeNull();
 });
 
 test("no warning for unrelated fields", () => {
-  expect(setConfigWorkspaceWarning("logging", { globalOverride: true } as any)).toBeNull();
+  expect(setConfigWorkspaceWarning("logging", true)).toBeNull();
 });
 ```
 
@@ -448,18 +497,18 @@ Expected: FAIL — `setConfigWorkspaceWarning` not exported.
 
 - [ ] **Step 3: Implement the helper and wire it**
 
-In `mcp/server.ts`, export:
+In `mcp/server.ts`, export (no type import — takes a plain boolean):
 
 ```typescript
-export function setConfigWorkspaceWarning(field: string, raw: HonchoFileConfig): string | null {
-  if (field === "workspace" && raw.globalOverride === true) {
+export function setConfigWorkspaceWarning(field: string, globalOverride: boolean): string | null {
+  if (field === "workspace" && globalOverride) {
     return "globalOverride is on, so this change writes to the per-host block but resolution reads the global default — it will NOT take effect. For a per-repo workspace, create a .honcho.json ({\"workspace\":\"...\"}) in the repo instead. To change the global default for ALL repos, edit ~/.honcho/config.json directly.";
   }
   return null;
 }
 ```
 
-In `handleSetConfig`, read the raw config file once (it already loads config), and when `field === "workspace"`, push `setConfigWorkspaceWarning(field, raw)` (if non-null) into the existing `warnings` array before building the response. Do NOT change where the value is written.
+In `handleSetConfig`, after the resolved config is loaded (the existing `cfg` at `server.ts:268`), when `field === "workspace"` push `setConfigWorkspaceWarning(field, cfg?.globalOverride === true)` (if non-null) into the existing `warnings` array before building the response. Do NOT change where the value is written.
 
 - [ ] **Step 4: Run test to verify it passes**
 
