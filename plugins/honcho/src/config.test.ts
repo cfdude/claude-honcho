@@ -3,7 +3,7 @@ import { test, expect, afterEach } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveConfig, loadConfigFromEnv, getWorkspaceProvenance } from "./config.js";
+import { resolveConfig, loadConfigFromEnv, getWorkspaceProvenance, getHonchoClientOptions } from "./config.js";
 
 const envBackup = process.env.HONCHO_WORKSPACE;
 const keyBackup = process.env.HONCHO_API_KEY;
@@ -88,4 +88,29 @@ test("provenance reports 'global' with no env and no file", () => {
   const p = getWorkspaceProvenance(dir);
   expect(p.source).toBe("global");
   rmSync(dir, { recursive: true, force: true });
+});
+
+// --- Cloudflare Access service-token headers (honcho-cloudflare-tunnel-access) ---
+
+test("getHonchoClientOptions emits CF-Access headers only when BOTH access creds are present", () => {
+  const base = { peerName: "p", apiKey: "k", workspace: "personal", aiPeer: "claude" } as any;
+  // neither present -> no defaultHeaders (unchanged behavior)
+  expect(getHonchoClientOptions(base).defaultHeaders).toBeUndefined();
+  // both present -> both headers
+  const opts = getHonchoClientOptions({ ...base, accessClientId: "cid.access", accessClientSecret: "csecret" });
+  expect(opts.defaultHeaders).toEqual({
+    "CF-Access-Client-Id": "cid.access",
+    "CF-Access-Client-Secret": "csecret",
+  });
+  // only one present -> no headers (both required)
+  expect(getHonchoClientOptions({ ...base, accessClientId: "cid.access" }).defaultHeaders).toBeUndefined();
+  expect(getHonchoClientOptions({ ...base, accessClientSecret: "csecret" }).defaultHeaders).toBeUndefined();
+});
+
+test("resolveConfig carries access creds from config.json root", () => {
+  const dir = emptyDir();
+  const raw = { ...BASE, workspace: "personal", accessClientId: "cid.access", accessClientSecret: "csecret" } as any;
+  const cfg = resolveConfig(raw, "claude_code", dir);
+  expect(cfg?.accessClientId).toBe("cid.access");
+  expect(cfg?.accessClientSecret).toBe("csecret");
 });

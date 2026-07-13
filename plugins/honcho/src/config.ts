@@ -195,6 +195,10 @@ interface HonchoFileConfig {
   // Legacy flat fields (read-only fallbacks when no hosts block)
   cursorPeer?: string;
   claudePeer?: string;
+  /** Cloudflare Access service-token credentials, sent as CF-Access-* headers on every
+   *  request (transport-level gate; same for all hosts/workspaces). Both required. */
+  accessClientId?: string;
+  accessClientSecret?: string;
 }
 
 /** Resolved runtime config consumed by all other code.
@@ -242,6 +246,9 @@ export interface HonchoCLAUDEConfig {
   logging?: boolean;
   /** When true, flat workspace/aiPeer fields apply to ALL hosts */
   globalOverride?: boolean;
+  /** Cloudflare Access service-token credentials (sent as CF-Access-* headers). Both required. */
+  accessClientId?: string;
+  accessClientSecret?: string;
 }
 
 function deepEqual(a: unknown, b: unknown): boolean {
@@ -357,6 +364,8 @@ export function resolveConfig(raw: HonchoFileConfig, host: HonchoHost, cwd: stri
     enabled: hostBlock?.enabled ?? raw.enabled,
     logging: hostBlock?.logging ?? raw.logging,
     globalOverride: raw.globalOverride,
+    accessClientId: raw.accessClientId,
+    accessClientSecret: raw.accessClientSecret,
   };
 
   return mergeWithEnvVars(config);
@@ -713,6 +722,8 @@ export interface HonchoClientOptions {
   workspaceId: string;
   timeout?: number;
   maxRetries?: number;
+  /** Extra headers sent on every request (e.g. Cloudflare Access service token). */
+  defaultHeaders?: Record<string, string>;
 }
 
 /** Get the base URL for Honcho API. Priority: baseUrl > environment > production */
@@ -733,13 +744,22 @@ export function getHonchoBaseUrl(config: HonchoCLAUDEConfig): string {
 }
 
 export function getHonchoClientOptions(config: HonchoCLAUDEConfig): HonchoClientOptions {
-  return {
+  const options: HonchoClientOptions = {
     apiKey: config.apiKey,
     baseURL: getHonchoBaseUrl(config),
     workspaceId: config.workspace,
     timeout: 8000,
     maxRetries: 1,
   };
+  // Cloudflare Access service-token headers — added only when BOTH creds are present,
+  // so behavior is unchanged for endpoints that don't sit behind Access.
+  if (config.accessClientId && config.accessClientSecret) {
+    options.defaultHeaders = {
+      "CF-Access-Client-Id": config.accessClientId,
+      "CF-Access-Client-Secret": config.accessClientSecret,
+    };
+  }
+  return options;
 }
 
 export function getEndpointInfo(config: HonchoCLAUDEConfig): { type: string; url: string } {
