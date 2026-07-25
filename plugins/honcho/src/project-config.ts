@@ -4,6 +4,21 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 /**
+ * The user's home directory, honoring $HOME.
+ *
+ * Mirrors homeDirPath() in config.ts (duplicated rather than imported — config.ts
+ * imports this module, so sharing would be a cycle). Node's os.homedir() honors
+ * $HOME; Bun's ignores it and reads the passwd entry. Resolving through this
+ * keeps the walk-up stopDir consistent with the config path on both runtimes, so
+ * a test that redirects HOME gets predictable behavior from both.
+ *
+ * `||` (not `??`) so an exported-but-empty `HOME=` falls back to homedir().
+ */
+function homeDirPath(): string {
+  return process.env.HOME || homedir();
+}
+
+/**
  * Walk up from `cwd` to the nearest `.honcho.json` and return both the workspace
  * and the directory containing the usable file.
  * Returns null when none is found, or when the nearest present file is missing/
@@ -17,7 +32,7 @@ import { dirname, join } from "node:path";
  * getWorkspaceProvenance() so that resolution and provenance reporting are
  * always in agreement.
  */
-export function findProjectConfig(cwd: string, stopDir: string = homedir()): { workspace: string; dir: string } | null {
+export function findProjectConfig(cwd: string, stopDir: string = homeDirPath()): { workspace: string; dir: string } | null {
   let dir = cwd;
   while (true) {
     if (dir === stopDir) break;
@@ -45,6 +60,6 @@ export function findProjectConfig(cwd: string, stopDir: string = homedir()): { w
  * Returns null when none is found, or when the file is missing/empty/malformed
  * or lacks a non-empty string `workspace`. Never throws.
  */
-export function getProjectWorkspace(cwd: string, stopDir: string = homedir()): string | null {
+export function getProjectWorkspace(cwd: string, stopDir: string = homeDirPath()): string | null {
   return findProjectConfig(cwd, stopDir)?.workspace ?? null;
 }

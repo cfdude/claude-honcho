@@ -89,6 +89,15 @@ function renderCard(rows: [string, string][], title: string): string {
 }
 
 function handleGetConfig(cwd: string) {
+  // NOTE: the `cwd` parameter is intentionally NOT used for workspace resolution
+  // or provenance below. It is derived from getLastActiveCwd() || process.cwd(),
+  // and getLastActiveCwd() is the most recently active cwd across ALL sessions —
+  // with parallel sessions open it can point at a different repo entirely, which
+  // would report (and resolve) the wrong workspace. Both loadConfig() and
+  // getWorkspaceProvenance() below therefore use process.cwd(), so the reported
+  // provenance and the config it explains are computed from the same directory
+  // and can never disagree. (`cwd` is still used further down for session lookup,
+  // where "most recently active session" is the right semantics.)
   const cfg = loadConfig();
   const host = getDetectedHost();
   const cfgPath = getConfigPath();

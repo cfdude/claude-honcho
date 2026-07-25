@@ -107,11 +107,11 @@ test("host-block workspace still applies when no env/project override", () => {
 // --- Fix-review follow-up tests (loadConfig fallback + saveConfig persistence guard) ---
 //
 // These two tests exercise loadConfig()/saveConfig() against a REAL (but temporary and
-// isolated) ~/.honcho/config.json path: config.ts resolves that path from homedir() fresh
-// on every call (not cached at module-load), so redirecting process.env.HOME for the
-// duration of a test safely isolates file I/O from the developer's real config. HOME is
-// always restored in `finally`, and the real config file at the developer's actual HOME is
-// never touched.
+// isolated) ~/.honcho/config.json path: config.ts resolves that path fresh on every call
+// (not cached at module-load) via its homeDirPath() helper, which reads process.env.HOME
+// first. That helper matters -- Bun's os.homedir() IGNORES $HOME and reads the passwd
+// entry, so without it these tests would silently read and WRITE the developer's real
+// ~/.honcho/config.json while appearing isolated. HOME is always restored in `finally`.
 
 test("loadConfig forwards cwd to loadConfigFromEnv when no config file exists (Finding 1 regression guard)", () => {
   const fakeHome = mkdtempSync(join(tmpdir(), "honcho-home-"));
@@ -128,7 +128,8 @@ test("loadConfig forwards cwd to loadConfigFromEnv when no config file exists (F
     const cfg = loadConfig("claude_code", projectDir);
     expect(cfg?.workspace).toBe("project-ws");
   } finally {
-    process.env.HOME = originalHome;
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
     delete process.env.HONCHO_API_KEY;
   }
 });
@@ -154,8 +155,48 @@ test("saveConfig does not persist an env-only HONCHO_WORKSPACE override to disk 
     const written = JSON.parse(readFileSync(configPath, "utf-8"));
     expect(written.hosts.claude_code.workspace).toBe("original-ws");
   } finally {
-    process.env.HOME = originalHome;
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
     delete process.env.HONCHO_WORKSPACE;
+  }
+});
+
+test("saveConfig does not persist a project-derived workspace to disk (cross-workspace leak guard)", () => {
+  const fakeHome = mkdtempSync(join(tmpdir(), "honcho-home-"));
+  const honchoDir = join(fakeHome, ".honcho");
+  mkdirSync(honchoDir, { recursive: true });
+  const configPath = join(honchoDir, "config.json");
+  // A DEFAULT install: no globalOverride, host block already carries the user's
+  // real (personal) workspace.
+  writeFileSync(
+    configPath,
+    JSON.stringify({ apiKey: "k", peerName: "p", hosts: { claude_code: { workspace: "personal" } } })
+  );
+
+  // A repo pinned to the employer workspace via a project .honcho.json.
+  const projectDir = mkdtempSync(join(tmpdir(), "honcho-project-"));
+  writeFileSync(join(projectDir, ".honcho.json"), JSON.stringify({ workspace: "highway" }));
+
+  const originalHome = process.env.HOME;
+  process.env.HOME = fakeHome;
+  delete process.env.HONCHO_WORKSPACE;
+  try {
+    // Simulates the resolved config loadConfig(host, projectDir) hands back inside
+    // that repo: workspace === "highway", sourced from the project file. Any
+    // saveConfig() in that session (session write, MCP set_config) must NOT make
+    // it the global host-block default -- otherwise an unrelated repo with no
+    // .honcho.json later resolves "highway" and personal work leaks into the
+    // employer workspace.
+    saveConfig(
+      { apiKey: "k", peerName: "p", workspace: "highway", aiPeer: "claude" } as any,
+      projectDir
+    );
+
+    const written = JSON.parse(readFileSync(configPath, "utf-8"));
+    expect(written.hosts.claude_code.workspace).toBe("personal");
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
   }
 });
 
@@ -175,7 +216,8 @@ test("provenance reports 'env' when HONCHO_WORKSPACE is set", () => {
   try {
     expect(getWorkspaceProvenance(dir).source).toBe("env");
   } finally {
-    process.env.HOME = originalHome;
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
     delete process.env.HONCHO_WORKSPACE;
   }
 });
@@ -191,7 +233,8 @@ test("provenance reports 'project' with the owning directory when .honcho.json i
     expect(prov.source).toBe("project");
     expect(prov.path).toBe(dir);
   } finally {
-    process.env.HOME = originalHome;
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
   }
 });
 
@@ -205,6 +248,7 @@ test("provenance reports 'global' when neither env nor project is present", () =
     expect(prov.source).toBe("global");
     expect(prov.path).toBeUndefined();
   } finally {
-    process.env.HOME = originalHome;
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
   }
 });

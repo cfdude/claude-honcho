@@ -365,11 +365,27 @@ function deepEqual(a: unknown, b: unknown): boolean {
   return true;
 }
 
+/**
+ * The user's home directory, honoring $HOME.
+ *
+ * Node's os.homedir() returns $HOME when set; Bun's reads the passwd entry and
+ * IGNORES $HOME. Every path below is resolved through this helper so behavior is
+ * identical on both runtimes — and so redirecting process.env.HOME in a test
+ * genuinely isolates config I/O instead of silently reading and WRITING the
+ * developer's real ~/.honcho/config.json.
+ *
+ * `||` (not `??`) so an exported-but-empty `HOME=` falls back to homedir()
+ * rather than producing a relative ".honcho" directory in the cwd.
+ */
+function homeDirPath(): string {
+  return process.env.HOME || homedir();
+}
+
 // Resolved fresh on every call (not cached at module-load) so tests can safely
 // redirect config I/O by overriding process.env.HOME for the duration of a test,
 // without ever touching the real ~/.honcho/config.json.
 function configDirPath(): string {
-  return join(homedir(), ".honcho");
+  return join(homeDirPath(), ".honcho");
 }
 
 function configFilePath(): string {
@@ -391,6 +407,15 @@ export function configExists(): boolean {
 /**
  * Load config from file, with environment variable fallbacks.
  * Host-specific fields are resolved from the hosts block in the config file.
+ *
+ * `cwd` defaults to process.cwd() DELIBERATELY. process.cwd() is the only
+ * trustworthy directory signal for workspace resolution: it belongs to the
+ * process actually asking. getLastActiveCwd() must NEVER drive workspace
+ * resolution — it returns the most recently active cwd across ALL sessions, so
+ * with parallel sessions open it can hand one repo's directory to another repo's
+ * lookup and resolve the wrong (potentially employer-vs-personal) workspace.
+ * The earlier `cwd ?? getLastActiveCwd() ?? process.cwd()` chain was dropped for
+ * exactly that reason; do not reinstate it.
  */
 export function loadConfig(host?: HonchoHost, cwd: string = process.cwd()): HonchoCLAUDEConfig | null {
   const resolvedHost = host ?? getDetectedHost();
@@ -595,8 +620,14 @@ function mergeWithEnvVars(config: HonchoCLAUDEConfig): HonchoCLAUDEConfig {
  *
  * resolveConfig() reads host block first, falls back to root, so the
  * user's root-level defaults still apply until overridden per-host.
+ *
+ * `cwd` (optional, trailing) is only used to detect whether the resolved
+ * `config.workspace` came from a project `.honcho.json`. It MUST match the cwd
+ * that resolved the config being saved — callers that use the default here must
+ * also have used the default on loadConfig(), or the provenance guard below
+ * evaluates against the wrong directory.
  */
-export function saveConfig(config: HonchoCLAUDEConfig): void {
+export function saveConfig(config: HonchoCLAUDEConfig, cwd: string = process.cwd()): void {
   const configDir = configDirPath();
   const configFile = configFilePath();
   if (!existsSync(configDir)) {
@@ -639,12 +670,23 @@ export function saveConfig(config: HonchoCLAUDEConfig): void {
     }
   };
 
-  // Don't persist an env-only HONCHO_WORKSPACE override to the host block: the
-  // resolved config.workspace came from the env (a per-invocation override), so
-  // writing it here would make it sticky for other directories/sessions that
-  // don't set it. Preserve whatever was already on disk instead. (Same pattern
-  // as HONCHO_ENABLED / HONCHO_LOGGING below.)
-  const workspaceForSave = process.env.HONCHO_WORKSPACE
+  // Don't persist a workspace that came from a per-invocation override — EITHER
+  // HONCHO_WORKSPACE or a project `.honcho.json`. In both cases the resolved
+  // config.workspace describes "the workspace for THIS directory/session", not a
+  // global choice; writing it to the host block would make it sticky everywhere.
+  //
+  // The project case is the dangerous one: open a session in a repo whose
+  // .honcho.json says {"workspace":"highway"}, let any saveConfig() fire (a
+  // session write, an MCP set_config), and hosts.<host>.workspace becomes
+  // "highway" on disk — after which an unrelated repo with no .honcho.json and no
+  // env var resolves "highway" too, and personal work lands in the employer
+  // workspace. That defeats the entire workspace-isolation guarantee.
+  //
+  // Preserve whatever was already on disk instead. (Same pattern as
+  // HONCHO_ENABLED / HONCHO_LOGGING below.)
+  const workspaceIsPerInvocation =
+    Boolean(process.env.HONCHO_WORKSPACE) || getProjectWorkspace(cwd) !== null;
+  const workspaceForSave = workspaceIsPerInvocation
     ? existingHost.workspace
     : config.workspace;
 
@@ -715,11 +757,11 @@ export function saveRootField(field: string, value: unknown): void {
 }
 
 export function getClaudeSettingsPath(): string {
-  return join(homedir(), ".claude", "settings.json");
+  return join(homeDirPath(), ".claude", "settings.json");
 }
 
 export function getClaudeSettingsDir(): string {
-  return join(homedir(), ".claude");
+  return join(homeDirPath(), ".claude");
 }
 
 export function getSessionForPath(cwd: string): string | null {
