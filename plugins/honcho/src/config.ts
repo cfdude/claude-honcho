@@ -365,19 +365,27 @@ function deepEqual(a: unknown, b: unknown): boolean {
   return true;
 }
 
-const CONFIG_DIR = join(homedir(), ".honcho");
-const CONFIG_FILE = join(CONFIG_DIR, "config.json");
+// Resolved fresh on every call (not cached at module-load) so tests can safely
+// redirect config I/O by overriding process.env.HOME for the duration of a test,
+// without ever touching the real ~/.honcho/config.json.
+function configDirPath(): string {
+  return join(homedir(), ".honcho");
+}
+
+function configFilePath(): string {
+  return join(configDirPath(), "config.json");
+}
 
 export function getConfigDir(): string {
-  return CONFIG_DIR;
+  return configDirPath();
 }
 
 export function getConfigPath(): string {
-  return CONFIG_FILE;
+  return configFilePath();
 }
 
 export function configExists(): boolean {
-  return existsSync(CONFIG_FILE);
+  return existsSync(configFilePath());
 }
 
 /**
@@ -389,14 +397,14 @@ export function loadConfig(host?: HonchoHost, cwd: string = process.cwd()): Honc
 
   if (configExists()) {
     try {
-      const content = readFileSync(CONFIG_FILE, "utf-8");
+      const content = readFileSync(configFilePath(), "utf-8");
       const raw = JSON.parse(content) as HonchoFileConfig;
       return resolveConfig(raw, resolvedHost, cwd);
     } catch {
       // Fall through to env-only config
     }
   }
-  return loadConfigFromEnv(resolvedHost);
+  return loadConfigFromEnv(resolvedHost, cwd);
 }
 
 export function resolveConfig(
@@ -419,7 +427,13 @@ export function resolveConfig(
   // Upstream only consults the env var in the legacy flat-field branch; hoisting it here
   // keeps `export HONCHO_WORKSPACE=highway` authoritative even when the config sets
   // globalOverride:true or carries a hosts block.
+  // NOTE: this env override is per-invocation only. saveConfig() deliberately does NOT
+  // materialize it to disk (see `workspaceForSave` there) — otherwise a round trip through
+  // loadConfig() -> saveConfig() while HONCHO_WORKSPACE is set (e.g. an MCP set_config call)
+  // would make a one-off override sticky for every other directory/session.
   const projectWorkspace = getProjectWorkspace(cwd);
+  // `||` (not `??`) so an exported-but-empty `HONCHO_WORKSPACE=` doesn't win with `""`.
+  const envWorkspace = process.env.HONCHO_WORKSPACE || undefined;
 
   // Resolve host-specific fields
   let workspace: string;
@@ -427,18 +441,18 @@ export function resolveConfig(
 
   if (raw.globalOverride === true) {
     // Global override: flat fields apply to ALL hosts
-    workspace = process.env.HONCHO_WORKSPACE ?? projectWorkspace ?? raw.workspace ?? DEFAULT_WORKSPACE[host];
+    workspace = envWorkspace ?? projectWorkspace ?? raw.workspace ?? DEFAULT_WORKSPACE[host];
     aiPeer = raw.aiPeer ?? hostBlock?.aiPeer ?? DEFAULT_AI_PEER[host];
   } else if (hostBlock) {
     // Host-specific block takes precedence
-    workspace = process.env.HONCHO_WORKSPACE ?? projectWorkspace ?? hostBlock.workspace ?? DEFAULT_WORKSPACE[host];
+    workspace = envWorkspace ?? projectWorkspace ?? hostBlock.workspace ?? DEFAULT_WORKSPACE[host];
     aiPeer = hostBlock.aiPeer ?? DEFAULT_AI_PEER[host];
   } else {
     // Legacy flat-field fallback for configs written before hosts block.
     // Env var is respected here (matching main-branch behavior) so it gets
     // captured into the hosts block on first saveConfig(), after which the
     // env var becomes redundant and is safely ignored.
-    workspace = process.env.HONCHO_WORKSPACE ?? projectWorkspace ?? raw.workspace ?? DEFAULT_WORKSPACE[host];
+    workspace = envWorkspace ?? projectWorkspace ?? raw.workspace ?? DEFAULT_WORKSPACE[host];
     if (host === "cursor") {
       aiPeer = raw.cursorPeer ?? DEFAULT_AI_PEER["cursor"];
     } else {
@@ -565,15 +579,17 @@ function mergeWithEnvVars(config: HonchoCLAUDEConfig): HonchoCLAUDEConfig {
  * user's root-level defaults still apply until overridden per-host.
  */
 export function saveConfig(config: HonchoCLAUDEConfig): void {
-  if (!existsSync(CONFIG_DIR)) {
-    mkdirSync(CONFIG_DIR, { recursive: true });
+  const configDir = configDirPath();
+  const configFile = configFilePath();
+  if (!existsSync(configDir)) {
+    mkdirSync(configDir, { recursive: true });
   }
 
   // Re-read from disk to avoid clobbering other tools' changes
   let existing: HonchoFileConfig = {};
-  if (existsSync(CONFIG_FILE)) {
+  if (existsSync(configFile)) {
     try {
-      existing = JSON.parse(readFileSync(CONFIG_FILE, "utf-8"));
+      existing = JSON.parse(readFileSync(configFile, "utf-8"));
     } catch {
       // Start fresh if corrupt
     }
@@ -605,10 +621,19 @@ export function saveConfig(config: HonchoCLAUDEConfig): void {
     }
   };
 
+  // Don't persist an env-only HONCHO_WORKSPACE override to the host block: the
+  // resolved config.workspace came from the env (a per-invocation override), so
+  // writing it here would make it sticky for other directories/sessions that
+  // don't set it. Preserve whatever was already on disk instead. (Same pattern
+  // as HONCHO_ENABLED / HONCHO_LOGGING below.)
+  const workspaceForSave = process.env.HONCHO_WORKSPACE
+    ? existingHost.workspace
+    : config.workspace;
+
   // Only persist workspace/aiPeer to host block if the block already had them
   // or if they differ from the default for this host.  This prevents root
   // fallback values from being materialized into host overrides.
-  setHostIfExplicit("workspace", config.workspace, existing.workspace ?? DEFAULT_WORKSPACE[host]);
+  setHostIfExplicit("workspace", workspaceForSave, existing.workspace ?? DEFAULT_WORKSPACE[host]);
   setHostIfExplicit("aiPeer", config.aiPeer, existing.aiPeer ?? DEFAULT_AI_PEER[host]);
 
   // Don't persist env-only overrides to the host block.
@@ -644,7 +669,7 @@ export function saveConfig(config: HonchoCLAUDEConfig): void {
 
   existing.hosts[host] = hostEntry;
 
-  writeFileSync(CONFIG_FILE, JSON.stringify(existing, null, 2));
+  writeFileSync(configFile, JSON.stringify(existing, null, 2));
 }
 
 /**
@@ -654,19 +679,21 @@ export function saveConfig(config: HonchoCLAUDEConfig): void {
  * Hooks and routine operations must NEVER call this.
  */
 export function saveRootField(field: string, value: unknown): void {
-  if (!existsSync(CONFIG_DIR)) {
-    mkdirSync(CONFIG_DIR, { recursive: true });
+  const configDir = configDirPath();
+  const configFile = configFilePath();
+  if (!existsSync(configDir)) {
+    mkdirSync(configDir, { recursive: true });
   }
 
   let existing: Record<string, unknown> = {};
-  if (existsSync(CONFIG_FILE)) {
+  if (existsSync(configFile)) {
     try {
-      existing = JSON.parse(readFileSync(CONFIG_FILE, "utf-8"));
+      existing = JSON.parse(readFileSync(configFile, "utf-8"));
     } catch {}
   }
 
   existing[field] = value;
-  writeFileSync(CONFIG_FILE, JSON.stringify(existing, null, 2));
+  writeFileSync(configFile, JSON.stringify(existing, null, 2));
 }
 
 export function getClaudeSettingsPath(): string {

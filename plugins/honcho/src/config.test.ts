@@ -1,8 +1,8 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getHonchoClientOptions, resolveConfig } from "./config.js";
+import { getHonchoClientOptions, resolveConfig, loadConfig, saveConfig } from "./config.js";
 
 /** A temp dir OUTSIDE $HOME so the .honcho.json walk-up terminates cleanly. */
 export function emptyDir(): string {
@@ -102,4 +102,59 @@ test("host-block workspace still applies when no env/project override", () => {
   const dir = emptyDir();
   const raw = { ...BASE, hosts: { claude_code: { workspace: "hostblock-ws" } } } as any;
   expect(resolveConfig(raw, "claude_code", dir)?.workspace).toBe("hostblock-ws");
+});
+
+// --- Fix-review follow-up tests (loadConfig fallback + saveConfig persistence guard) ---
+//
+// These two tests exercise loadConfig()/saveConfig() against a REAL (but temporary and
+// isolated) ~/.honcho/config.json path: config.ts resolves that path from homedir() fresh
+// on every call (not cached at module-load), so redirecting process.env.HOME for the
+// duration of a test safely isolates file I/O from the developer's real config. HOME is
+// always restored in `finally`, and the real config file at the developer's actual HOME is
+// never touched.
+
+test("loadConfig forwards cwd to loadConfigFromEnv when no config file exists (Finding 1 regression guard)", () => {
+  const fakeHome = mkdtempSync(join(tmpdir(), "honcho-home-"));
+  const projectDir = mkdtempSync(join(tmpdir(), "honcho-project-"));
+  writeFileSync(join(projectDir, ".honcho.json"), JSON.stringify({ workspace: "project-ws" }));
+
+  const originalHome = process.env.HOME;
+  process.env.HOME = fakeHome;
+  process.env.HONCHO_API_KEY = "test-key";
+  delete process.env.HONCHO_WORKSPACE;
+  try {
+    // No ~/.honcho/config.json exists under fakeHome, so loadConfig() must fall through to
+    // loadConfigFromEnv() -- and it must forward `cwd` so the project override still applies.
+    const cfg = loadConfig("claude_code", projectDir);
+    expect(cfg?.workspace).toBe("project-ws");
+  } finally {
+    process.env.HOME = originalHome;
+    delete process.env.HONCHO_API_KEY;
+  }
+});
+
+test("saveConfig does not persist an env-only HONCHO_WORKSPACE override to disk (Finding 2 regression guard)", () => {
+  const fakeHome = mkdtempSync(join(tmpdir(), "honcho-home-"));
+  const honchoDir = join(fakeHome, ".honcho");
+  mkdirSync(honchoDir, { recursive: true });
+  const configPath = join(honchoDir, "config.json");
+  writeFileSync(
+    configPath,
+    JSON.stringify({ apiKey: "k", peerName: "p", hosts: { claude_code: { workspace: "original-ws" } } })
+  );
+
+  const originalHome = process.env.HOME;
+  process.env.HOME = fakeHome;
+  process.env.HONCHO_WORKSPACE = "env-ws";
+  try {
+    // Simulates the resolved config a loadConfig() call would hand back while
+    // HONCHO_WORKSPACE is set -- config.workspace reflects the per-invocation env override.
+    saveConfig({ apiKey: "k", peerName: "p", workspace: "env-ws", aiPeer: "claude" } as any);
+
+    const written = JSON.parse(readFileSync(configPath, "utf-8"));
+    expect(written.hosts.claude_code.workspace).toBe("original-ws");
+  } finally {
+    process.env.HOME = originalHome;
+    delete process.env.HONCHO_WORKSPACE;
+  }
 });
