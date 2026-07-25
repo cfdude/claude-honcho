@@ -285,6 +285,10 @@ interface HonchoFileConfig {
    *  ignoring host-specific blocks. When false (default), each host
    *  uses its own block and flat fields are fallbacks only. */
   globalOverride?: boolean;
+  /** Cloudflare Access service-token credentials, sent as CF-Access-* headers on every
+   *  request when both are present. Required to reach an Access-gated Honcho origin. */
+  accessClientId?: string;
+  accessClientSecret?: string;
   // Legacy flat fields (read-only fallbacks when no hosts block)
   cursorPeer?: string;
   claudePeer?: string;
@@ -341,6 +345,9 @@ export interface HonchoCLAUDEConfig {
   logging?: boolean;
   /** When true, flat workspace/aiPeer fields apply to ALL hosts */
   globalOverride?: boolean;
+  /** Cloudflare Access service-token credentials (sent as CF-Access-* headers). Both required. */
+  accessClientId?: string;
+  accessClientSecret?: string;
 }
 
 function deepEqual(a: unknown, b: unknown): boolean {
@@ -391,7 +398,7 @@ export function loadConfig(host?: HonchoHost): HonchoCLAUDEConfig | null {
   return loadConfigFromEnv(resolvedHost);
 }
 
-function resolveConfig(raw: HonchoFileConfig, host: HonchoHost): HonchoCLAUDEConfig | null {
+export function resolveConfig(raw: HonchoFileConfig, host: HonchoHost): HonchoCLAUDEConfig | null {
   const hostBlock = raw.hosts?.[host]
     ?? raw.hosts?.[host.replace(/_/g, "-")]
     ?? raw.hosts?.[host.replace(/-/g, "_")];
@@ -451,6 +458,8 @@ function resolveConfig(raw: HonchoFileConfig, host: HonchoHost): HonchoCLAUDECon
     enabled: hostBlock?.enabled ?? raw.enabled,
     logging: hostBlock?.logging ?? raw.logging,
     globalOverride: raw.globalOverride,
+    accessClientId: raw.accessClientId,
+    accessClientSecret: raw.accessClientSecret,
   };
 
   return mergeWithEnvVars(config);
@@ -841,6 +850,8 @@ export interface HonchoClientOptions {
   workspaceId: string;
   timeout?: number;
   maxRetries?: number;
+  /** Extra headers sent on every SDK request (used for Cloudflare Access service tokens). */
+  defaultHeaders?: Record<string, string>;
 }
 
 /** Get the base URL for Honcho API. Priority: baseUrl > environment > production */
@@ -861,13 +872,21 @@ export function getHonchoBaseUrl(config: HonchoCLAUDEConfig): string {
 }
 
 export function getHonchoClientOptions(config: HonchoCLAUDEConfig): HonchoClientOptions {
-  return {
+  const options: HonchoClientOptions = {
     apiKey: config.apiKey,
     baseURL: getHonchoBaseUrl(config),
     workspaceId: config.workspace,
     timeout: 120000,
     maxRetries: 1,
   };
+  // Both credentials are required; a half-configured pair must not send partial auth.
+  if (config.accessClientId && config.accessClientSecret) {
+    options.defaultHeaders = {
+      "CF-Access-Client-Id": config.accessClientId,
+      "CF-Access-Client-Secret": config.accessClientSecret,
+    };
+  }
+  return options;
 }
 
 export function getEndpointInfo(config: HonchoCLAUDEConfig): { type: string; url: string } {
