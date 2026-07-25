@@ -3,7 +3,7 @@ import { join, basename } from "path";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { captureGitState } from "./git.js";
 import { getInstanceIdForCwd, getClaudeInstanceId } from "./cache.js";
-import { getProjectWorkspace } from "./project-config.js";
+import { getProjectWorkspace, findProjectConfig } from "./project-config.js";
 
 function sanitizeForSessionName(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9-_]/g, "-");
@@ -405,6 +405,24 @@ export function loadConfig(host?: HonchoHost, cwd: string = process.cwd()): Honc
     }
   }
   return loadConfigFromEnv(resolvedHost, cwd);
+}
+
+/**
+ * Report which layer decided the effective workspace, for `get_config` output.
+ * Uses findProjectConfig() (the same single walk as resolution) so that source/path
+ * reporting and actual resolution can never disagree.
+ */
+export function getWorkspaceProvenance(cwd: string): { workspace: string; source: "env" | "project" | "global"; path?: string } {
+  const cfg = loadConfig("claude_code", cwd);
+  const workspace = cfg?.workspace ?? "";
+  if (process.env.HONCHO_WORKSPACE) {
+    return { workspace, source: "env" };
+  }
+  const found = findProjectConfig(cwd);
+  if (found) {
+    return { workspace, source: "project", path: found.dir };
+  }
+  return { workspace, source: "global" };
 }
 
 export function resolveConfig(

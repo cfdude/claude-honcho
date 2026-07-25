@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getHonchoClientOptions, resolveConfig, loadConfig, saveConfig } from "./config.js";
+import { getHonchoClientOptions, resolveConfig, loadConfig, saveConfig, getWorkspaceProvenance } from "./config.js";
 
 /** A temp dir OUTSIDE $HOME so the .honcho.json walk-up terminates cleanly. */
 export function emptyDir(): string {
@@ -156,5 +156,55 @@ test("saveConfig does not persist an env-only HONCHO_WORKSPACE override to disk 
   } finally {
     process.env.HOME = originalHome;
     delete process.env.HONCHO_WORKSPACE;
+  }
+});
+
+// --- getWorkspaceProvenance ---
+//
+// getWorkspaceProvenance() calls loadConfig() internally, which reads
+// ~/.honcho/config.json when it exists. Isolate HOME to a fresh temp dir (with
+// no config.json inside it) for every case below, exactly like the loadConfig/
+// saveConfig tests above, so these never touch the developer's real config file.
+
+test("provenance reports 'env' when HONCHO_WORKSPACE is set", () => {
+  const fakeHome = mkdtempSync(join(tmpdir(), "honcho-home-"));
+  const dir = emptyDir();
+  const originalHome = process.env.HOME;
+  process.env.HOME = fakeHome;
+  process.env.HONCHO_WORKSPACE = "highway";
+  try {
+    expect(getWorkspaceProvenance(dir).source).toBe("env");
+  } finally {
+    process.env.HOME = originalHome;
+    delete process.env.HONCHO_WORKSPACE;
+  }
+});
+
+test("provenance reports 'project' with the owning directory when .honcho.json is found", () => {
+  const fakeHome = mkdtempSync(join(tmpdir(), "honcho-home-"));
+  const dir = emptyDir();
+  writeFileSync(join(dir, ".honcho.json"), JSON.stringify({ workspace: "highway" }));
+  const originalHome = process.env.HOME;
+  process.env.HOME = fakeHome;
+  try {
+    const prov = getWorkspaceProvenance(dir);
+    expect(prov.source).toBe("project");
+    expect(prov.path).toBe(dir);
+  } finally {
+    process.env.HOME = originalHome;
+  }
+});
+
+test("provenance reports 'global' when neither env nor project is present", () => {
+  const fakeHome = mkdtempSync(join(tmpdir(), "honcho-home-"));
+  const dir = emptyDir();
+  const originalHome = process.env.HOME;
+  process.env.HOME = fakeHome;
+  try {
+    const prov = getWorkspaceProvenance(dir);
+    expect(prov.source).toBe("global");
+    expect(prov.path).toBeUndefined();
+  } finally {
+    process.env.HOME = originalHome;
   }
 });
