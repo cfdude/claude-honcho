@@ -56,6 +56,22 @@ export function visMessage(direction: HookDirection, hookName: string, message: 
  * every turn's transcript. `matched` is only set for high-signal topics, so a
  * low-signal fuzzy fallback query is never surfaced as a bogus match.
  */
+/**
+ * Max characters of a single conclusion shown in the terminal summary.
+ * This bounds the *display* only — `additionalContext` still carries every
+ * conclusion at full length, so the model's memory is unaffected. Without this
+ * bound a handful of long conclusions reprint several KB on every single turn.
+ */
+export const CONCLUSION_PREVIEW_CHARS = 160;
+
+/** One conclusion, collapsed to a single bounded line for terminal display. */
+function previewConclusion(text: string): string {
+  const oneLine = text.replace(/\s+/g, " ").trim();
+  return oneLine.length > CONCLUSION_PREVIEW_CHARS
+    ? `${oneLine.slice(0, CONCLUSION_PREVIEW_CHARS)}…`
+    : oneLine;
+}
+
 export function visInjectionMessage(hookName: string, opts: {
   conclusions: string[];
   matched?: string[];
@@ -70,7 +86,7 @@ export function visInjectionMessage(hookName: string, opts: {
       ? `injected ${count} ${noun} (matched: ${opts.matched.join(", ")})`
       : `injected ${count} ${noun}`;
   const summary = formatLine("in", hookName, head);
-  const body = opts.conclusions.map(c => `  ${sym.bullet} ${c}`).join("\n");
+  const body = opts.conclusions.map(c => `  ${sym.bullet} ${previewConclusion(c)}`).join("\n");
   return body ? `${summary}\n${body}` : summary;
 }
 
