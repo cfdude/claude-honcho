@@ -8,7 +8,18 @@ import {
   getInstanceIdForCwd,
 } from "../cache.js";
 import { logHook, logApiCall, setLogContext } from "../log.js";
-import { visInjectionMessage, visDialecticMessage, visSkipMessage, addSystemMessage, verboseApiResult, verboseList } from "../visual.js";
+import {
+  visInjectionMessage,
+  visDialecticMessage,
+  visSkipMessage,
+  visErrorLine,
+  visStatusLine,
+  visDiagnostics,
+  getCurrentOutputLevel,
+  addSystemMessage,
+  verboseApiResult,
+  verboseList,
+} from "../visual.js";
 import type { ReasoningLevel } from "../config.js";
 import { honchoSessionUrl } from "../styles.js";
 import { setMemoryState, setSessionLink } from "../state.js";
@@ -224,17 +235,42 @@ export async function handleUserPrompt(): Promise<void> {
   // Both components run concurrently on independent budgets: context on the tight
   // 4s race, dialectic on its own ~25s budget. Neither blocks the other, and the
   // hook completes as soon as the slowest selected component resolves or times out.
-  const [ctxResult, dialectic] = await Promise.all([
+  const turnStart = Date.now();
+  const [ctxResult, dialecticResult] = await Promise.all([
     wantContext ? raceTimeout(fetchFreshContext(config, prompt, injection), FETCH_TIMEOUT_MS) : Promise.resolve(null),
     wantDialectic ? raceTimeout(fetchDialectic(config, prompt, injection), DIALECTIC_TIMEOUT_MS) : Promise.resolve(null),
   ]);
+  const elapsedMs = Date.now() - turnStart;
 
   const ctx: { context: any; matched?: string[]; queryLabel?: string } | null =
     ctxResult?.context
       ? { context: ctxResult.context, matched: ctxResult.matched, queryLabel: ctxResult.queryLabel }
       : null;
+  const dialectic = dialecticResult?.result ?? null;
 
-  emitPerTurn(config.peerName, ctx, dialectic, sessionLink);
+  // Failures the plugin used to swallow into the log file only. visErrorLine
+  // returns "" at "off" and a formatted line at every other level, so these
+  // reach the user even when routine chatter is suppressed at "error".
+  const errorLines = [ctxResult?.error, dialecticResult?.error]
+    .filter((e): e is string => !!e)
+    .map(e => visErrorLine("user-prompt", e));
+
+  // Verbose-only health block: endpoint, workspace + provenance, whether the
+  // Access service token is attached (boolean only), and this turn's timing.
+  // The extras are built lazily — at info/error/off nothing here runs at all,
+  // so a quiet terminal really does cost nothing on the per-turn hot path.
+  const diagnostics = getCurrentOutputLevel() === "verbose"
+    ? visDiagnostics(config, {
+        "retrieval": `${(elapsedMs / 1000).toFixed(1)}s`,
+        "components": injection.perTurn.join(", ") || "none",
+        "conclusions": ctx ? extractConclusions(ctx.context).length : 0,
+      }, cwd)
+    : "";
+
+  emitPerTurn(config.peerName, ctx, dialectic, {
+    sessionLink,
+    extraLines: [...errorLines, diagnostics],
+  });
   process.exit(0);
 }
 
@@ -244,11 +280,11 @@ export async function handleUserPrompt(): Promise<void> {
  * systemMessage summary. Exits silently when nothing resolved to content —
  * mirroring the old no-cache fall-through.
  */
-function emitPerTurn(
+export function emitPerTurn(
   peerName: string,
   ctx: { context: any; matched?: string[]; queryLabel?: string } | null,
   dialectic: DialecticResult | null,
-  sessionLink?: string,
+  opts: { sessionLink?: string; extraLines?: string[] } = {},
 ): void {
   const parts: string[] = [];
   const visLines: string[] = [];
@@ -256,6 +292,10 @@ function emitPerTurn(
   if (ctx) {
     const conclusions = extractConclusions(ctx.context);
     if (conclusions.length > 0) {
+      // `parts` feeds additionalContext; `visLines` feeds the terminal. They are
+      // built from the same data but are INDEPENDENT — no outputLevel check
+      // touches `parts`, which is what makes additionalContext byte-identical
+      // from "verbose" all the way down to "off".
       parts.push(`Relevant conclusions: ${conclusions.join("; ")}`);
       visLines.push(visInjectionMessage("user-prompt", { conclusions, matched: ctx.matched, queryLabel: ctx.queryLabel }));
     }
@@ -266,10 +306,23 @@ function emitPerTurn(
     visLines.push(visDialecticMessage("user-prompt", dialectic.reasoning, dialectic.elapsedMs, dialectic.answer));
   }
 
-  if (parts.length === 0) return;
+  // The session link is a status banner, not a failure — it drops at "error"/"off"
+  // like everything else routine, so "off" really is silent.
+  const displayLines = [
+    ...(opts.sessionLink ? [visStatusLine(opts.sessionLink)] : []),
+    ...visLines,
+    ...(opts.extraLines ?? []),
+  ].filter(l => !!l && l.trim().length > 0);
+  const visMsg = displayLines.join("\n");
 
-  const visMsg = visLines.join("\n");
-  outputContext(peerName, parts, sessionLink ? `${sessionLink}\n${visMsg}` : visMsg);
+  if (parts.length === 0) {
+    // Nothing to inject. There may still be a failure or a diagnostics block
+    // worth showing — emit it as a systemMessage-only object (one JSON write).
+    if (visMsg) console.log(JSON.stringify({ systemMessage: visMsg }));
+    return;
+  }
+
+  outputContext(peerName, parts, visMsg);
 }
 
 interface DialecticResult {
@@ -284,7 +337,7 @@ interface DialecticResult {
  * %{user_query}). Unscoped by session so recall spans the peer's full history,
  * not just this conversation. Returns null on empty/failed answer.
  */
-async function fetchDialectic(config: any, prompt: string, injection: InjectionConfig): Promise<DialecticResult | null> {
+async function fetchDialectic(config: any, prompt: string, injection: InjectionConfig): Promise<{ result: DialecticResult | null; error?: string }> {
   const honcho = new Honcho(getHonchoClientOptions(config));
   const observationMode = getObservationMode(config);
 
@@ -305,15 +358,17 @@ async function fetchDialectic(config: any, prompt: string, injection: InjectionC
     });
     const elapsedMs = Date.now() - startTime;
     logApiCall("peer.chat (dialectic)", "POST", `${reasoning}: ${query.slice(0, 60)}`, elapsedMs, true);
-    if (typeof answer !== "string" || !answer.trim()) return null;
-    return { answer: answer.trim(), reasoning, elapsedMs };
+    if (typeof answer !== "string" || !answer.trim()) return { result: null };
+    return { result: { answer: answer.trim(), reasoning, elapsedMs } };
   } catch (e) {
+    // Logged to file AND surfaced to the terminal by the caller — an auth
+    // rejection or an unreachable endpoint here used to be entirely invisible.
     logHook("user-prompt", `Dialectic fetch failed: ${e}`);
-    return null;
+    return { result: null, error: `dialectic recall failed: ${e}` };
   }
 }
 
-async function fetchFreshContext(config: any, prompt: string, injection: InjectionConfig): Promise<{ context: any; matched: string[]; queryLabel?: string }> {
+async function fetchFreshContext(config: any, prompt: string, injection: InjectionConfig): Promise<{ context: any; matched: string[]; queryLabel?: string; error?: string }> {
   const honcho = new Honcho(getHonchoClientOptions(config));
   const observationMode = getObservationMode(config);
 
@@ -341,6 +396,9 @@ async function fetchFreshContext(config: any, prompt: string, injection: Injecti
   // Topics shown to the user as the match — only set when the topics are
   // high-signal, so we never surface fuzzy fallback words as a real match.
   let matched: string[] = [];
+  // Surfaced to the terminal by the caller (visErrorLine) instead of being
+  // swallowed into the log file, which is what happened before outputLevel.
+  let fetchError: string | undefined;
 
   try {
     contextResult = await contextPeer.context({
@@ -355,6 +413,7 @@ async function fetchFreshContext(config: any, prompt: string, injection: Injecti
     logApiCall(contextLabel, "GET", `search: ${searchQuery.slice(0, 60)}`, Date.now() - startTime, true);
   } catch (e) {
     logHook("user-prompt", `Context fetch failed: ${e}`);
+    fetchError = `context fetch failed: ${e}`;
   }
 
   if (contextResult) {
@@ -362,7 +421,7 @@ async function fetchFreshContext(config: any, prompt: string, injection: Injecti
     verboseList("peer.context() -> peerCard (fresh)", (contextResult as any).peerCard);
   }
 
-  return { context: contextResult, matched, queryLabel: usePrompt ? "prompt" : undefined };
+  return { context: contextResult, matched, queryLabel: usePrompt ? "prompt" : undefined, error: fetchError };
 }
 
 // Per-turn context injects representation-derived conclusions ONLY. The full

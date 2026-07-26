@@ -59,6 +59,8 @@ AskUserQuestion:
       description: "Token limits, summarization settings"
     - label: "Statusline"
       description: "Memory statusLine visibility — on / off (currently: {resolved.statusline})"
+    - label: "Output level"
+      description: "How much honcho prints to the terminal — verbose / info / error / off (currently: {resolved.outputLevel})"
 ```
 
 Always include current values in the description so the user can see what's set.
@@ -222,6 +224,31 @@ AskUserQuestion:
 ```
 
 Call `set_config` with field `statusline` and the chosen value. Takes effect on the next statusLine repaint.
+
+### Output level
+
+Controls TERMINAL output volume only. It never changes what is injected into the model's
+context — the memory payload is byte-identical at every level, including `off`. It is also
+unrelated to `logging`, which governs the log FILES under `~/.honcho/`.
+
+```
+AskUserQuestion:
+  question: "How much should honcho print to the terminal?"
+  header: "Output level"
+  options:
+    - label: "info (Recommended)"
+      description: "One status line per event — e.g. 'injected 5 conclusions'. No per-conclusion bullets"
+    - label: "verbose"
+      description: "Everything, plus diagnostics (endpoint, workspace provenance, whether Access headers are sent). For troubleshooting"
+    - label: "error"
+      description: "Silent when healthy — only failures print"
+    - label: "off"
+      description: "Nothing is ever printed"
+```
+
+Call `set_config` with field `outputLevel` and the chosen value. Takes effect on the next hook
+run. For a one-off override without editing config, tell the user they can launch with
+`HONCHO_OUTPUT_LEVEL=verbose claude` — that wins for the invocation and is never persisted.
 
 ### Message upload
 

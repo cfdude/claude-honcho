@@ -3,7 +3,7 @@ import { loadConfig, getSessionForPath, getSessionName, getHonchoClientOptions, 
 import { existsSync, readFileSync } from "fs";
 import { getInstanceIdForCwd, chunkContent, addMessagesBatched } from "../cache.js";
 import { logHook, logApiCall, setLogContext } from "../log.js";
-import { visStopMessage } from "../visual.js";
+import { visStopMessage, visError } from "../visual.js";
 
 interface HookInput {
   session_id?: string;
@@ -172,6 +172,11 @@ export async function handleStop(): Promise<void> {
     visStopMessage("out", `saved ${turnMessages.length} assistant msg(s)`);
   } catch (error) {
     logHook("stop", `Upload failed: ${error}`, { error: String(error) });
+    // Surfaced at "error" and above: a failed assistant-message write means the
+    // turn was never remembered, which the user should not have to tail a log
+    // file to discover. Only one of the two branches ever prints, so this hook
+    // still emits at most one JSON object on stdout.
+    visError("response", `message upload failed: ${error}`);
   }
 
   process.exit(0);

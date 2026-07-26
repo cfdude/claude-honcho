@@ -14,7 +14,7 @@ import { setMemoryState, setSessionLink } from "../state.js";
 import { honchoSessionUrl } from "../styles.js";
 import { captureGitState } from "../git.js";
 import { logHook, logApiCall, logFlow, logAsync, setLogContext } from "../log.js";
-import { verboseApiResult, verboseList, clearVerboseLog, visComposedInjection } from "../visual.js";
+import { verboseApiResult, verboseList, clearVerboseLog, visComposedInjection, addSystemMessage } from "../visual.js";
 
 
 interface HookInput {
@@ -206,13 +206,16 @@ export async function handleSessionStart(): Promise<void> {
     setMemoryState("idle", undefined, claudeInstanceId);
 
     if (rendered.content) {
-      console.log(JSON.stringify({
+      // additionalContext is emitted unconditionally — the model gets the same
+      // memory at every outputLevel. Only the systemMessage is gated, and it is
+      // added via addSystemMessage() so a suppressed level yields NO key rather
+      // than `"systemMessage": ""` (which would render as a blank banner).
+      console.log(JSON.stringify(addSystemMessage({
         hookSpecificOutput: {
           hookEventName: "SessionStart",
           additionalContext: `[Honcho Memory for ${config.peerName}]: ${rendered.content}`,
         },
-        systemMessage: visComposedInjection("session-start", rendered.labels),
-      }));
+      }, visComposedInjection("session-start", rendered.labels))));
     }
 
     logFlow("complete", `Cache warmed: ${successCount}/1 context · injected: ${rendered.labels.join(", ") || "none"}`);

@@ -118,6 +118,35 @@ export const DEFAULT_INJECTION: Required<InjectionConfig> = {
 export const REASONING_LEVELS = ["minimal", "low", "medium", "high", "max"] as const;
 export type ReasoningLevel = (typeof REASONING_LEVELS)[number];
 
+/**
+ * How much Honcho prints to the TERMINAL (the human-facing `systemMessage`).
+ *
+ * - "verbose": everything — injection summary WITH per-conclusion previews,
+ *   captures, saves, skips, PLUS per-turn diagnostics (endpoint, workspace
+ *   provenance, whether Access headers are being sent).
+ * - "info" (default): one status line per event, no per-conclusion bullets,
+ *   no diagnostics.
+ * - "error": silent when healthy — only failures are printed.
+ * - "off": nothing is ever printed.
+ *
+ * DISPLAY ONLY. This never changes the `additionalContext` payload handed to
+ * the model: memory quality must not depend on how loud the terminal is. See
+ * the `off` vs `verbose` byte-identity test in output-level.test.ts.
+ *
+ * NOT to be confused with `logging`, which controls the activity/verbose LOG
+ * FILES under ~/.honcho/ — those are unaffected by this dial.
+ */
+export const OUTPUT_LEVELS = ["verbose", "info", "error", "off"] as const;
+export type OutputLevel = (typeof OUTPUT_LEVELS)[number];
+
+export const DEFAULT_OUTPUT_LEVEL: OutputLevel = "info";
+
+/** Parse an untrusted string (env var, MCP arg) into an OutputLevel, else undefined. */
+export function parseOutputLevel(value: string | undefined | null): OutputLevel | undefined {
+  if (!value) return undefined;
+  return (OUTPUT_LEVELS as readonly string[]).includes(value) ? (value as OutputLevel) : undefined;
+}
+
 export type SessionStrategy = "per-directory" | "git-branch" | "chat-instance";
 
 export type StatuslineMode = "on" | "off";
@@ -167,6 +196,8 @@ export interface HostConfig {
   sessionPeerPrefix?: boolean;
   /** Default reasoning level for Honcho dialectic calls (default: "medium") */
   reasoningLevel?: ReasoningLevel;
+  /** Terminal output verbosity for this host (default: "info"). Display only. */
+  outputLevel?: OutputLevel;
   /**
    * Observation mode (default: "unified").
    * "unified": all agents write to user's self-observation collection (observer=user, observed=user).
@@ -246,6 +277,23 @@ export async function initHook(): Promise<void> {
   try { input = JSON.parse(stdinText || "{}"); } catch { process.exit(0); }
   if (input.cursor_version) process.exit(0);
   setDetectedHost(detectHost(input));
+
+  // Wire the terminal output dial once, here, rather than in each of the seven
+  // hook entry points — every hook goes through initHook(), and `outputLevel`
+  // is cwd-independent (a project `.honcho.json` only ever contributes
+  // `workspace`; see project-config.ts), so resolving it against process.cwd()
+  // before the hook parses its own cwd is exact, not an approximation.
+  //
+  // The import is DYNAMIC on purpose: visual.ts statically imports this module
+  // (isLoggingEnabled), so a static import back would close a cycle. initHook is
+  // already async, so this costs nothing. On any failure the module-level
+  // default of "info" stands — a broken config must not silence the terminal.
+  try {
+    const { setOutputLevel } = await import("./visual.js");
+    setOutputLevel(getOutputLevel(loadConfig()));
+  } catch {
+    // keep the "info" default
+  }
 }
 
 // ============================================
@@ -275,6 +323,8 @@ interface HonchoFileConfig {
   sessionPeerPrefix?: boolean;
   /** Default reasoning level for Honcho dialectic calls (default: "medium") */
   reasoningLevel?: ReasoningLevel;
+  /** Terminal output verbosity (default: "info"). Display only — see OUTPUT_LEVELS. */
+  outputLevel?: OutputLevel;
   /** Observation mode (default: "unified") */
   observationMode?: ObservationMode;
   /** Memory statusLine visibility: "on" (default) · "off" */
@@ -322,6 +372,11 @@ export interface HonchoCLAUDEConfig {
   saveGitEvents?: boolean;
   /** Default reasoning level for Honcho dialectic calls (default: "medium") */
   reasoningLevel?: ReasoningLevel;
+  /**
+   * Terminal output verbosity (default: "info"). Governs the human-facing
+   * `systemMessage` ONLY — `additionalContext` is byte-identical at every level.
+   */
+  outputLevel?: OutputLevel;
   /**
    * Observation mode (default: "unified").
    * "unified": all agents write to user's self-observation collection.
@@ -508,6 +563,7 @@ export function resolveConfig(
     saveToolUse: hostBlock?.saveToolUse ?? raw.saveToolUse,
     saveGitEvents: hostBlock?.saveGitEvents ?? raw.saveGitEvents,
     reasoningLevel: hostBlock?.reasoningLevel ?? raw.reasoningLevel,
+    outputLevel: hostBlock?.outputLevel ?? raw.outputLevel ?? DEFAULT_OUTPUT_LEVEL,
     observationMode: hostBlock?.observationMode ?? raw.observationMode,
     messageUpload: hostBlock?.messageUpload ?? raw.messageUpload,
     contextRefresh: hostBlock?.contextRefresh ?? raw.contextRefresh,
@@ -555,6 +611,9 @@ export function loadConfigFromEnv(host?: HonchoHost, cwd?: string): HonchoCLAUDE
     saveGitEvents: process.env.HONCHO_SAVE_GIT_EVENTS === "true",
     enabled: process.env.HONCHO_ENABLED !== "false",
     logging: process.env.HONCHO_LOGGING !== "false",
+    // This branch never runs through mergeWithEnvVars(), so the env override is
+    // applied here directly (same as saveToolUse/saveGitEvents above).
+    outputLevel: parseOutputLevel(process.env.HONCHO_OUTPUT_LEVEL) ?? DEFAULT_OUTPUT_LEVEL,
   };
 
   if (endpoint) {
@@ -594,6 +653,15 @@ function mergeWithEnvVars(config: HonchoCLAUDEConfig): HonchoCLAUDEConfig {
   }
   if (process.env.HONCHO_SAVE_GIT_EVENTS !== undefined) {
     config.saveGitEvents = process.env.HONCHO_SAVE_GIT_EVENTS === "true";
+  }
+  // HONCHO_OUTPUT_LEVEL is a per-invocation debugging override that beats the
+  // file config. An unrecognized value is IGNORED (not an error, not a silent
+  // mute) so a typo can never take the terminal quiet — the resolved
+  // file/default value stands. Like HONCHO_ENABLED/HONCHO_LOGGING, saveConfig()
+  // deliberately refuses to persist it (see `outputLevelForSave` there).
+  const envOutputLevel = parseOutputLevel(process.env.HONCHO_OUTPUT_LEVEL);
+  if (envOutputLevel) {
+    config.outputLevel = envOutputLevel;
   }
   return config;
 }
@@ -710,9 +778,17 @@ export function saveConfig(config: HonchoCLAUDEConfig, cwd: string = process.cwd
   const loggingForSave = process.env.HONCHO_LOGGING === "false" && config.logging === false
     ? existingHost.logging
     : config.logging;
+  // Same guard for HONCHO_OUTPUT_LEVEL: a one-off `HONCHO_OUTPUT_LEVEL=verbose`
+  // used to debug a single session must not become the persisted default for
+  // every future session the moment any saveConfig() fires.
+  const envOutputLevel = parseOutputLevel(process.env.HONCHO_OUTPUT_LEVEL);
+  const outputLevelForSave = envOutputLevel !== undefined && config.outputLevel === envOutputLevel
+    ? existingHost.outputLevel  // preserve what was on disk
+    : config.outputLevel;
 
   setHostIfExplicit("enabled", enabledForSave, existing.enabled);
   setHostIfExplicit("logging", loggingForSave, existing.logging);
+  setHostIfExplicit("outputLevel", outputLevelForSave, existing.outputLevel ?? DEFAULT_OUTPUT_LEVEL);
   setHostIfExplicit("saveMessages", config.saveMessages, existing.saveMessages);
   setHostIfExplicit("sessionStrategy", config.sessionStrategy, existing.sessionStrategy);
   setHostIfExplicit("sessionPeerPrefix", config.sessionPeerPrefix, existing.sessionPeerPrefix);
@@ -900,6 +976,16 @@ export function getLocalContextConfig(): LocalContextConfig {
 export function getInjectionConfig(config?: HonchoCLAUDEConfig | null): Required<InjectionConfig> {
   const injection = (config === undefined ? loadConfig() : config)?.injection;
   return { ...DEFAULT_INJECTION, ...(injection ?? {}) };
+}
+
+/**
+ * Resolved terminal output level, defaulting to "info". Pass the already-loaded
+ * config (hooks have it in scope) to avoid a second disk read; omit it for a
+ * standalone lookup. `null` (no usable config) also resolves to the default.
+ */
+export function getOutputLevel(config?: HonchoCLAUDEConfig | null): OutputLevel {
+  const resolved = (config === undefined ? loadConfig() : config)?.outputLevel;
+  return parseOutputLevel(resolved) ?? DEFAULT_OUTPUT_LEVEL;
 }
 
 export function isLoggingEnabled(): boolean {

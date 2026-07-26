@@ -4,6 +4,19 @@ All notable changes to claude-honcho will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-25
+
+### Added
+
+- `outputLevel` config field — a four-level dial (`verbose` / `info` / `error` / `off`) controlling how much Honcho prints to the terminal. Defaults to `info`: one status line per event, instead of reprinting every injected conclusion at full length on every turn. `verbose` restores the per-conclusion previews and adds a per-turn diagnostics block (endpoint, resolved workspace + provenance, whether Cloudflare Access headers are being sent — never the credential values). `error` is silent when healthy. `off` prints nothing.
+- `HONCHO_OUTPUT_LEVEL` env var for one-off debugging. It overrides the file config for that invocation only, is never persisted to disk, and an unrecognized value falls back to the configured level rather than silencing output.
+- Failures that were previously written only to the log file are now surfaced in the terminal at `error` and above: per-turn context and dialectic fetch failures, post-tool-use capture upload failures, and stop-hook message upload failures.
+- `set_config` accepts `outputLevel`, so the dial is settable without hand-editing `~/.honcho/config.json`.
+
+### Changed
+
+- The injected `additionalContext` payload is unchanged at every output level, including `off` — `outputLevel` governs display only, and memory quality never depends on it.
+
 ## [0.2.7] - 2026-07-22
 
 ### Added

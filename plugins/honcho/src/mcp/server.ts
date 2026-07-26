@@ -25,6 +25,10 @@ import {
   type HonchoEnvironment,
   type ObservationMode,
   type StatuslineMode,
+  type OutputLevel,
+  OUTPUT_LEVELS,
+  parseOutputLevel,
+  DEFAULT_OUTPUT_LEVEL,
   type SessionStartComponent,
   type PerTurnComponent,
   SESSION_START_COMPONENTS,
@@ -126,6 +130,7 @@ function handleGetConfig(cwd: string) {
     contextRefresh: cfg.contextRefresh ?? {},
     reasoningLevel: cfg.reasoningLevel ?? "medium",
     observationMode: cfg.observationMode ?? "unified",
+    outputLevel: cfg.outputLevel ?? "info",
     statusline: cfg.statusline ?? "on",
     localContext: cfg.localContext ?? {},
     injection: cfg.injection ?? {},
@@ -315,7 +320,8 @@ export function setConfigProjectShadowWarning(
   return `This repo pins its workspace via ${project.dir}/.honcho.json ("${project.workspace}"), and a project file beats the global/host setting — so this change will NOT take effect while you are in this repo. To change the workspace here, edit that .honcho.json instead.`;
 }
 
-function handleSetConfig(args: Record<string, unknown>) {
+/** Exported for tests. Not part of the MCP tool surface — that goes through the dispatcher. */
+export function handleSetConfig(args: Record<string, unknown>) {
   const field = args.field;
   if (typeof field !== "string" || !field) {
     return {
@@ -521,6 +527,22 @@ function handleSetConfig(args: Record<string, unknown>) {
       cfg.observationMode = String(value) as ObservationMode;
       break;
 
+    case "outputLevel": {
+      // Validated like statusline, but persisted like reasoningLevel — it is a
+      // per-host display preference, so it goes through saveConfig() into the
+      // host block rather than saveRootField().
+      const level = parseOutputLevel(String(value).toLowerCase());
+      if (!level) {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ success: false, error: `outputLevel must be one of: ${OUTPUT_LEVELS.join(", ")}` }, null, 2) }],
+          isError: true,
+        };
+      }
+      previousValue = cfg.outputLevel ?? DEFAULT_OUTPUT_LEVEL;
+      cfg.outputLevel = level as OutputLevel;
+      break;
+    }
+
     case "statusline": {
       const mode = String(value).toLowerCase();
       if (mode !== "on" && mode !== "off") {
@@ -668,6 +690,7 @@ function handleSetConfig(args: Record<string, unknown>) {
     contextRefresh: cfg.contextRefresh ?? {},
     reasoningLevel: cfg.reasoningLevel ?? "medium",
     observationMode: cfg.observationMode ?? "unified",
+    outputLevel: cfg.outputLevel ?? "info",
     statusline: cfg.statusline ?? "on",
     localContext: cfg.localContext ?? {},
     injection: cfg.injection ?? {},
@@ -893,6 +916,7 @@ export async function runMcpServer(): Promise<void> {
                   "contextRefresh.skipDialectic",
                   "reasoningLevel",
                   "observationMode",
+                  "outputLevel",
                   "localContext.maxEntries",
                   "injection.sessionStart",
                   "injection.perTurn",

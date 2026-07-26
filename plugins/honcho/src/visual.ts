@@ -11,7 +11,14 @@
  */
 
 import { arrows, symbols } from "./unicode.js";
-import { isLoggingEnabled } from "./config.js";
+import {
+  isLoggingEnabled,
+  getEndpointInfo,
+  getWorkspaceProvenance,
+  DEFAULT_OUTPUT_LEVEL,
+  type OutputLevel,
+  type HonchoCLAUDEConfig,
+} from "./config.js";
 
 // Plain text (no ANSI) for systemMessage — shown in Claude Code's UI
 const sym = {
@@ -40,13 +47,140 @@ function formatLine(direction: HookDirection, hookName: string, message: string)
   return `[honcho] ${hookName} ${directionSymbol[direction]} ${message}`;
 }
 
+// ============================================
+// Terminal output level — the display dial
+//
+// Governs the human-facing `systemMessage` ONLY. The `additionalContext`
+// payload handed to the model is built independently and is byte-identical at
+// every level, including "off": memory quality must never depend on how loud
+// the terminal is (asserted in output-level.test.ts).
+//
+// Set once per hook process by config.ts's initHook(), right after host
+// detection. The default is "info" (NOT "verbose") so an emitter that somehow
+// runs before initialization can only ever under-print, never spam.
+//
+// Unrelated to `logging` / verboseApiResult / writeVerbose further down this
+// file — those write to ~/.honcho/*.log FILES and are not affected by this dial.
+// ============================================
+
+const LEVEL_RANK: Record<OutputLevel, number> = { off: 0, error: 1, info: 2, verbose: 3 };
+
+let _outputLevel: OutputLevel = DEFAULT_OUTPUT_LEVEL;
+
+export function setOutputLevel(level: OutputLevel): void {
+  _outputLevel = level;
+}
+
+export function getCurrentOutputLevel(): OutputLevel {
+  return _outputLevel;
+}
+
+/** True when the current level is at least as loud as `min`. */
+function atLeast(min: OutputLevel): boolean {
+  return LEVEL_RANK[_outputLevel] >= LEVEL_RANK[min];
+}
+
+/** Routine status lines ("injected …", "captured: …", "saved N msgs") — verbose + info. */
+function showsStatus(): boolean {
+  return atLeast("info");
+}
+
+/** Per-conclusion bullets, full dialectic answers, diagnostics — verbose only. */
+function showsDetail(): boolean {
+  return atLeast("verbose");
+}
+
+/** Failures — verbose + info + error; silent only at "off". */
+function showsErrors(): boolean {
+  return atLeast("error");
+}
+
+/**
+ * Print one systemMessage JSON to stdout, built from `lines`.
+ *
+ * Empty lines are dropped and a fully-empty set prints NOTHING — no blank
+ * `systemMessage`, no stray newline. Every printing emitter routes through this
+ * so a hook emits at most ONE JSON object on stdout: Claude Code parses hook
+ * stdout as a single JSON document, and a second `console.log(JSON.stringify(…))`
+ * would corrupt it (for UserPromptSubmit it would be swallowed as raw context
+ * text). Hooks that already own their stdout (user-prompt, session-start) use
+ * the *-line/returning variants and fold the result into their own object.
+ */
+function emitLines(lines: (string | undefined | null)[]): void {
+  const body = lines.filter((l): l is string => !!l && l.trim().length > 0).join("\n");
+  if (!body) return;
+  console.log(JSON.stringify({ systemMessage: body }));
+}
+
 /**
  * Output a systemMessage JSON to stdout — shown to the user in Claude Code's UI
- * Use this for hooks that don't already write to stdout (PostToolUse, Stop)
+ * Use this for hooks that don't already write to stdout (PostToolUse, Stop).
+ * Suppressed below "info" — use visError() for failures, which survives "error".
  */
 export function visMessage(direction: HookDirection, hookName: string, message: string): void {
-  const line = formatLine(direction, hookName, message);
-  console.log(JSON.stringify({ systemMessage: line }));
+  if (!showsStatus()) return;
+  emitLines([formatLine(direction, hookName, message)]);
+}
+
+/**
+ * A failure line, formatted. Returns "" at "off". Use this from hooks that
+ * already own stdout (user-prompt) and fold the result into their own JSON.
+ */
+export function visErrorLine(hookName: string, message: string): string {
+  if (!showsErrors()) return "";
+  return formatLine("error", hookName, message);
+}
+
+/**
+ * Report a failure to the terminal. Visible at "verbose", "info" AND "error" —
+ * the whole point of the "error" level is that a broken endpoint, a rejected
+ * credential or a dropped write still reaches the user when routine chatter
+ * does not. Silent only at "off".
+ */
+export function visError(hookName: string, message: string): void {
+  emitLines([visErrorLine(hookName, message)]);
+}
+
+/**
+ * A compact one-block health readout: where we're talking to, which workspace
+ * we resolved and why, and whether Cloudflare Access headers are attached.
+ * Verbose only — returns "" otherwise.
+ *
+ * Returns a string rather than printing: its only caller (user-prompt) already
+ * owns stdout and must emit exactly one JSON object. See emitLines() above.
+ *
+ * NEVER prints credential VALUES — only the boolean fact that both halves of
+ * the Access service token are present and therefore being sent.
+ */
+export function visDiagnostics(
+  config: HonchoCLAUDEConfig,
+  extra?: Record<string, string | number>,
+  cwd: string = process.cwd(),
+): string {
+  if (!showsDetail()) return "";
+
+  let workspaceDetail = config.workspace;
+  try {
+    const prov = getWorkspaceProvenance(cwd);
+    workspaceDetail = `${prov.workspace || config.workspace} (source: ${prov.source}${prov.path ? ` @ ${prov.path}` : ""})`;
+  } catch {
+    // provenance is a nicety; never let it break the turn
+  }
+
+  const accessHeaders = Boolean(config.accessClientId && config.accessClientSecret);
+  const rows: string[] = [
+    `endpoint: ${getEndpointInfo(config).url}`,
+    `workspace: ${workspaceDetail}`,
+    `cf-access headers: ${accessHeaders ? "yes" : "no"}`,
+  ];
+  for (const [k, v] of Object.entries(extra ?? {})) {
+    rows.push(`${k}: ${v}`);
+  }
+
+  return [
+    formatLine("info", "diagnostics", `output level ${_outputLevel}`),
+    ...rows.map(r => `  ${sym.bullet} ${r}`),
+  ].join("\n");
 }
 
 /**
@@ -78,6 +212,8 @@ export function visInjectionMessage(hookName: string, opts: {
   /** Overrides the matched suffix, e.g. "prompt" → "(query: prompt)". */
   queryLabel?: string;
 }): string {
+  // "error"/"off": a healthy injection is not a failure — say nothing.
+  if (!showsStatus()) return "";
   const count = opts.conclusions.length;
   const noun = count === 1 ? "conclusion" : "conclusions";
   const head = opts.queryLabel
@@ -86,6 +222,9 @@ export function visInjectionMessage(hookName: string, opts: {
       ? `injected ${count} ${noun} (matched: ${opts.matched.join(", ")})`
       : `injected ${count} ${noun}`;
   const summary = formatLine("in", hookName, head);
+  // "info" is the default and deliberately prints the header ONLY — reprinting
+  // every conclusion on every turn is the noise this dial exists to fix.
+  if (!showsDetail()) return summary;
   const body = opts.conclusions.map(c => `  ${sym.bullet} ${previewConclusion(c)}`).join("\n");
   return body ? `${summary}\n${body}` : summary;
 }
@@ -97,7 +236,9 @@ export function visInjectionMessage(hookName: string, opts: {
  * intended trade-off; it also lands in additionalContext for the model.
  */
 export function visDialecticMessage(hookName: string, reasoning: string, elapsedMs: number, answer: string): string {
+  if (!showsStatus()) return "";
   const head = formatLine("in", hookName, `injected dialectic (${reasoning} · ${(elapsedMs / 1000).toFixed(1)}s)`);
+  if (!showsDetail()) return head;
   return answer.trim() ? `${head}\n${answer.trim()}` : head;
 }
 
@@ -108,15 +249,41 @@ export function visDialecticMessage(hookName: string, reasoning: string, elapsed
  * per-turn line it stays terse — the payload itself goes to additionalContext.
  */
 export function visComposedInjection(hookName: string, labels: string[]): string {
+  if (!showsStatus()) return "";
   const summary = labels.length ? `injected ${labels.join(" + ")}` : "nothing to inject";
   return formatLine("in", hookName, summary);
+}
+
+/**
+ * Pass through a plain status banner (e.g. the GUI session link) at
+ * "verbose"/"info", drop it at "error"/"off". Without this, `off` would still
+ * leak a one-line banner on the first turns of a session.
+ */
+export function visStatusLine(text: string): string {
+  return showsStatus() ? text : "";
+}
+
+/** The "captured: …" line, formatted. Returns "" below "info". */
+export function visCaptureLine(summary: string): string {
+  if (!showsStatus()) return "";
+  return formatLine("out", "post-tool-use", `captured: ${summary}`);
 }
 
 /**
  * Output tool capture as systemMessage (for post-tool-use — no existing stdout)
  */
 export function visCapture(summary: string): void {
-  visMessage("out", "post-tool-use", `captured: ${summary}`);
+  emitLines([visCaptureLine(summary)]);
+}
+
+/**
+ * Print the capture line and (if the upload failed) the error, as ONE JSON
+ * object. post-tool-use has two things to say per invocation but only one
+ * stdout write to say them in — see emitLines(). At "error"/"off" the capture
+ * line drops out and only the failure survives.
+ */
+export function visCaptureWithError(summary: string, error?: string | null): void {
+  emitLines([visCaptureLine(summary), error ? visErrorLine("post-tool-use", error) : ""]);
 }
 
 /**
@@ -139,6 +306,10 @@ export function visStopMessage(direction: HookDirection, message: string): void 
  * Used by UserPromptSubmit which already outputs JSON
  */
 export function addSystemMessage(existingJson: any, message: string): any {
+  // A suppressed emitter returns "". Adding `systemMessage: ""` would render an
+  // empty banner in Claude Code, so an empty message adds NO key at all — the
+  // difference between "quiet" and "a blank line every turn".
+  if (!message || !message.trim()) return existingJson;
   return { ...existingJson, systemMessage: message };
 }
 

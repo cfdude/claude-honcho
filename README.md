@@ -203,10 +203,13 @@ All configuration lives in a single global file at `~/.honcho/config.json`. You 
     // or: "baseUrl": "http://your-server:8000/v3"
   },
 
+  // Terminal output
+  "outputLevel": "info",              // "verbose" | "info" (default) | "error" | "off"
+
   // Miscellaneous
   "localContext": { "maxEntries": 50 }, // Max entries in claude-context.md
   "enabled": true,
-  "logging": true,
+  "logging": true,                      // Activity LOG FILES under ~/.honcho/ — unrelated to outputLevel
 
   // Advanced: force all hosts to use the same workspace
   "globalOverride": false
@@ -222,6 +225,39 @@ Session strategy controls how Honcho maps your conversations to sessions. Change
 | `per-directory` (default) | One session per project directory. Stable across restarts. | Most users — each project accumulates its own memory |
 | `git-branch` | Session name includes the current git branch. Switching branches switches sessions. | Feature-branch workflows where context per branch matters |
 | `chat-instance` | Each Claude Code chat gets its own session. No continuity between restarts. | Ephemeral usage, experimentation, or when you want a clean slate each time |
+
+### Terminal Output Level
+
+Controls how much Honcho prints to your terminal. Change it with `/honcho:config`, `set_config`, or by editing `config.json`.
+
+| Level | What you see |
+| --- | --- |
+| `verbose` | Everything: the injection summary **with** per-conclusion previews, the full dialectic answer, captures, saves, skips — plus a per-turn diagnostics block (endpoint URL, resolved workspace and where it came from, whether Cloudflare Access headers are attached). Use this when troubleshooting. |
+| `info` (default) | One status line per event — `injected 5 conclusions (query: prompt)`, `saved 3 assistant msg(s)`. No per-conclusion bullets, no diagnostics. |
+| `error` | Silent when healthy. Only failures print — a rejected credential, an unreachable endpoint, a dropped write. |
+| `off` | Nothing is ever printed. |
+
+> **Display only.** This setting never changes what Honcho sends to the model. The `additionalContext` payload carrying your memory is byte-identical at every level, including `off` — turning the terminal quiet does not make Claude forget.
+>
+> **Not the same as `logging`.** `logging` controls the activity/verbose **log files** under `~/.honcho/`. `outputLevel` controls **terminal** output. They are independent.
+
+Per-host, like any other setting:
+
+```json
+{
+  "hosts": {
+    "claude_code": { "outputLevel": "verbose" }
+  }
+}
+```
+
+For a one-off debugging session, set the env var instead — it wins over the file config for that invocation and is never written to disk:
+
+```bash
+HONCHO_OUTPUT_LEVEL=verbose claude
+```
+
+An unrecognized value (a typo) is ignored and your configured level stands, so a mistake can never silently mute the plugin.
 
 ### Observation Mode
 

@@ -2,7 +2,7 @@ import { Honcho } from "@honcho-ai/sdk";
 import { loadConfig, getSessionForPath, getSessionName, getHonchoClientOptions, isPluginEnabled, getCachedStdin } from "../config.js";
 import { appendClaudeWork, getClaudeInstanceId } from "../cache.js";
 import { logHook, logApiCall, setLogContext } from "../log.js";
-import { visCapture } from "../visual.js";
+import { visCaptureWithError } from "../visual.js";
 
 
 interface HookInput {
@@ -220,13 +220,26 @@ export async function handlePostToolUse(): Promise<void> {
 
   const summary = formatToolSummary(toolName, toolInput, toolResponse);
   logHook("post-tool-use", summary, { tool: toolName });
-  visCapture(summary);
 
   // INSTANT: Update local claude context file (~2ms)
   appendClaudeWork(summary);
 
-  // Upload to Honcho and wait for completion
-  await logToHonchoAsync(config, cwd, summary).catch((e) => logHook("post-tool-use", `Upload failed: ${e}`, { error: String(e) }));
+  // Upload to Honcho and wait for completion. The failure was previously
+  // written to the log file only — invisible in the terminal even though a
+  // dropped write means memory silently didn't happen.
+  const uploadError = await logToHonchoAsync(config, cwd, summary).then(
+    () => null,
+    (e) => {
+      logHook("post-tool-use", `Upload failed: ${e}`, { error: String(e) });
+      return `capture upload failed: ${e}`;
+    },
+  );
+
+  // ONE stdout write carrying both the capture line and any failure — Claude
+  // Code parses hook stdout as a single JSON document, so this hook must not
+  // print twice. At "error"/"off" the capture line drops and only the failure
+  // (if any) survives.
+  visCaptureWithError(summary, uploadError);
 
   process.exit(0);
 }

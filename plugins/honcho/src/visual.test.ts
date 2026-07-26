@@ -1,7 +1,15 @@
-import { test, expect } from "bun:test";
-import { visInjectionMessage, CONCLUSION_PREVIEW_CHARS } from "./visual.js";
+import { test, expect, beforeEach, afterEach } from "bun:test";
+import { visInjectionMessage, setOutputLevel, CONCLUSION_PREVIEW_CHARS } from "./visual.js";
 
 const long = "x".repeat(CONCLUSION_PREVIEW_CHARS + 500);
+
+// Per-conclusion bullets only exist at "verbose" now (the default "info" prints
+// the header alone). These tests are about how a bullet is BOUNDED, so they
+// declare the level that produces bullets. The truncation behavior itself is
+// unchanged. The level is module state shared across test files in one bun
+// process, so it is reset after each test rather than set once at the top.
+beforeEach(() => setOutputLevel("verbose"));
+afterEach(() => setOutputLevel("info"));
 
 test("long conclusions are truncated in the terminal summary", () => {
   const out = visInjectionMessage("user-prompt", { conclusions: [long], queryLabel: "prompt" });
