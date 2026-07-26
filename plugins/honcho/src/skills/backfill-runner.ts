@@ -26,8 +26,8 @@ import {
 import { addMessagesBatched, chunkContent } from "../cache.js";
 import { parseTranscriptForBackfill, type ParsedMessage } from "./transcript-parse.js";
 import * as s from "../styles.js";
-import { homedir } from "os";
 import { join, basename } from "path";
+import { homeDirPath } from "../home.js";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from "fs";
 
 interface Args {
@@ -50,7 +50,7 @@ function parseArgs(argv: string[]): Args {
   return args;
 }
 
-const PROJECTS_DIR = join(homedir(), ".claude", "projects");
+const PROJECTS_DIR = join(homeDirPath(), ".claude", "projects");
 const STATE_FILE = join(getConfigDir(), "backfill-state.json");
 
 /** Idempotency ledger: which (workspace, transcript@mtime) pairs already imported. */

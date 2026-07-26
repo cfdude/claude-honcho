@@ -1,9 +1,9 @@
-import { homedir } from "os";
 import { join, basename } from "path";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { captureGitState } from "./git.js";
 import { getInstanceIdForCwd, getClaudeInstanceId } from "./cache.js";
 import { getProjectWorkspace, findProjectConfig } from "./project-config.js";
+import { homeDirPath } from "./home.js";
 
 function sanitizeForSessionName(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9-_]/g, "-");
@@ -365,21 +365,11 @@ function deepEqual(a: unknown, b: unknown): boolean {
   return true;
 }
 
-/**
- * The user's home directory, honoring $HOME.
- *
- * Node's os.homedir() returns $HOME when set; Bun's reads the passwd entry and
- * IGNORES $HOME. Every path below is resolved through this helper so behavior is
- * identical on both runtimes — and so redirecting process.env.HOME in a test
- * genuinely isolates config I/O instead of silently reading and WRITING the
- * developer's real ~/.honcho/config.json.
- *
- * `||` (not `??`) so an exported-but-empty `HOME=` falls back to homedir()
- * rather than producing a relative ".honcho" directory in the cwd.
- */
-function homeDirPath(): string {
-  return process.env.HOME || homedir();
-}
+// homeDirPath() lives in ./home.js — the single definition for the whole plugin.
+// Resolving every ~/.honcho path through it keeps this module in agreement with
+// cache/log/state/visual on Bun (whose os.homedir() ignores $HOME), and lets a
+// test redirect process.env.HOME to genuinely isolate config I/O instead of
+// silently reading and WRITING the developer's real ~/.honcho/config.json.
 
 // Resolved fresh on every call (not cached at module-load) so tests can safely
 // redirect config I/O by overriding process.env.HOME for the duration of a test,
@@ -684,8 +674,22 @@ export function saveConfig(config: HonchoCLAUDEConfig, cwd: string = process.cwd
   //
   // Preserve whatever was already on disk instead. (Same pattern as
   // HONCHO_ENABLED / HONCHO_LOGGING below.)
+  //
+  // The test is a VALUE comparison, not a presence test. Merely being inside a
+  // repo that has a `.honcho.json` must not block every workspace write —
+  // otherwise an explicit `set_config workspace=X` in such a repo is a silent
+  // no-op that still reports success. Only a workspace whose value IS the
+  // per-invocation override is treated as per-invocation; a genuinely
+  // user-chosen value (different from both env and project) still persists.
+  //
+  // The `!== undefined` guard keeps the pre-existing behavior for a config with
+  // no workspace at all: `undefined === process.env.HONCHO_WORKSPACE` is true
+  // when the env var is unset, which would otherwise flip an absent workspace
+  // into a rewrite of the existing host value.
   const workspaceIsPerInvocation =
-    Boolean(process.env.HONCHO_WORKSPACE) || getProjectWorkspace(cwd) !== null;
+    config.workspace !== undefined &&
+    (config.workspace === process.env.HONCHO_WORKSPACE ||
+      config.workspace === getProjectWorkspace(cwd));
   const workspaceForSave = workspaceIsPerInvocation
     ? existingHost.workspace
     : config.workspace;

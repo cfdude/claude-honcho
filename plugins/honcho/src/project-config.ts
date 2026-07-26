@@ -1,22 +1,10 @@
 // plugins/honcho/src/project-config.ts
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-
-/**
- * The user's home directory, honoring $HOME.
- *
- * Mirrors homeDirPath() in config.ts (duplicated rather than imported — config.ts
- * imports this module, so sharing would be a cycle). Node's os.homedir() honors
- * $HOME; Bun's ignores it and reads the passwd entry. Resolving through this
- * keeps the walk-up stopDir consistent with the config path on both runtimes, so
- * a test that redirects HOME gets predictable behavior from both.
- *
- * `||` (not `??`) so an exported-but-empty `HOME=` falls back to homedir().
- */
-function homeDirPath(): string {
-  return process.env.HOME || homedir();
-}
+// ./home.js imports nothing but node:os, so importing it here cannot create a
+// cycle even though config.ts imports this module. It keeps the walk-up stopDir
+// consistent with the config path on both Node and Bun.
+import { homeDirPath } from "./home.js";
 
 /**
  * Walk up from `cwd` to the nearest `.honcho.json` and return both the workspace

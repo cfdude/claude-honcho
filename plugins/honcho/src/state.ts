@@ -5,11 +5,11 @@
  * statusline render the glow/pulse on its own refresh cycle.
  */
 
-import { homedir } from "os";
 import { join } from "path";
 import { writeFileSync, unlinkSync } from "fs";
+import { homeDirPath } from "./home.js";
 
-const DIR = join(homedir(), ".honcho");
+const DIR = join(homeDirPath(), ".honcho");
 
 // Per-window files keyed by Claude Code's session_id (the one field guaranteed
 // identical between hook stdin and statusLine stdin). Falls back to a global

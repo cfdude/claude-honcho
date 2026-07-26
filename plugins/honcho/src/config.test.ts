@@ -200,6 +200,40 @@ test("saveConfig does not persist a project-derived workspace to disk (cross-wor
   }
 });
 
+test("saveConfig DOES persist an explicit workspace that differs from env and project (R2)", () => {
+  const fakeHome = mkdtempSync(join(tmpdir(), "honcho-home-"));
+  const honchoDir = join(fakeHome, ".honcho");
+  mkdirSync(honchoDir, { recursive: true });
+  const configPath = join(honchoDir, "config.json");
+  writeFileSync(
+    configPath,
+    JSON.stringify({ apiKey: "k", peerName: "p", hosts: { claude_code: { workspace: "personal" } } })
+  );
+
+  // Inside a repo that pins "highway" via .honcho.json ...
+  const projectDir = mkdtempSync(join(tmpdir(), "honcho-project-"));
+  writeFileSync(join(projectDir, ".honcho.json"), JSON.stringify({ workspace: "highway" }));
+
+  const originalHome = process.env.HOME;
+  process.env.HOME = fakeHome;
+  delete process.env.HONCHO_WORKSPACE;
+  try {
+    // ... an EXPLICIT set_config workspace=chosen-ws (a value that came from
+    // neither the env var nor the project file) must still reach disk. The old
+    // presence-based guard made this a silent no-op that reported success.
+    saveConfig(
+      { apiKey: "k", peerName: "p", workspace: "chosen-ws", aiPeer: "claude" } as any,
+      projectDir
+    );
+
+    const written = JSON.parse(readFileSync(configPath, "utf-8"));
+    expect(written.hosts.claude_code.workspace).toBe("chosen-ws");
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+  }
+});
+
 // --- getWorkspaceProvenance ---
 //
 // getWorkspaceProvenance() calls loadConfig() internally, which reads

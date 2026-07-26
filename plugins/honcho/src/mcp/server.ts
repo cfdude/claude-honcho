@@ -32,6 +32,7 @@ import {
   REASONING_LEVELS,
   getObservationMode,
 } from "../config.js";
+import { findProjectConfig } from "../project-config.js";
 import { honchoSessionUrl } from "../styles.js";
 import {
   getLastActiveCwd,
@@ -294,6 +295,26 @@ export function setConfigWorkspaceWarning(field: string, globalOverride: boolean
   return null;
 }
 
+/**
+ * Warn when a `set_config workspace` write is shadowed by a project `.honcho.json`.
+ *
+ * Mirrors setConfigWorkspaceWarning()'s shape (pure, exported, no I/O of its own —
+ * the caller supplies the already-resolved project config) so it can be tested
+ * without cwd games.
+ *
+ * Phrased in terms of EFFECT rather than "the file was/wasn't written", because
+ * both outcomes are possible: a value equal to the project's is not persisted at
+ * all, while a different value IS persisted to the host block but still loses to
+ * the project file whenever resolution happens inside this repo.
+ */
+export function setConfigProjectShadowWarning(
+  field: string,
+  project: { workspace: string; dir: string } | null
+): string | null {
+  if (field !== "workspace" || !project) return null;
+  return `This repo pins its workspace via ${project.dir}/.honcho.json ("${project.workspace}"), and a project file beats the global/host setting — so this change will NOT take effect while you are in this repo. To change the workspace here, edit that .honcho.json instead.`;
+}
+
 function handleSetConfig(args: Record<string, unknown>) {
   const field = args.field;
   if (typeof field !== "string" || !field) {
@@ -349,6 +370,11 @@ function handleSetConfig(args: Record<string, unknown>) {
   // Warn when a workspace write is shadowed by globalOverride
   const wsWarn = setConfigWorkspaceWarning(field, cfg?.globalOverride === true);
   if (wsWarn) warnings.push(wsWarn);
+
+  // Warn when a workspace write is shadowed by a project .honcho.json. loadConfig()
+  // above used the default cwd, so resolve provenance against the same directory.
+  const projShadow = setConfigProjectShadowWarning(field, findProjectConfig(process.cwd()));
+  if (projShadow) warnings.push(projShadow);
 
   // Apply the change
   switch (field) {

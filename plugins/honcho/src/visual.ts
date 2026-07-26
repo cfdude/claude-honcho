@@ -137,14 +137,14 @@ export function addSystemMessage(existingJson: any, message: string): any {
 // printing verbose data to stdout instead — use formatVerboseBlock().
 // ============================================
 
-import { homedir } from "os";
 import { join } from "path";
 import { appendFileSync, mkdirSync, existsSync, writeFileSync } from "fs";
+import { homeDirPath } from "./home.js";
 
-const VERBOSE_LOG = join(homedir(), ".honcho", "verbose.log");
+const VERBOSE_LOG = join(homeDirPath(), ".honcho", "verbose.log");
 
 function ensureVerboseLog(): void {
-  const dir = join(homedir(), ".honcho");
+  const dir = join(homeDirPath(), ".honcho");
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }
