@@ -50,7 +50,11 @@ function parseArgs(argv: string[]): Args {
   return args;
 }
 
-const PROJECTS_DIR = join(homeDirPath(), ".claude", "projects");
+// Lazily resolved (not a module-level const) so a `HOME` redirected after
+// import (e.g. by tests) is honored — see home.ts's homeDirPath().
+function projectsDir(): string {
+  return join(homeDirPath(), ".claude", "projects");
+}
 const STATE_FILE = join(getConfigDir(), "backfill-state.json");
 
 /** Idempotency ledger: which (workspace, transcript@mtime) pairs already imported. */
@@ -73,11 +77,11 @@ function saveState(state: BackfillState): void {
 
 /** All transcript files under ~/.claude/projects modified within `days`. */
 export function findTranscripts(days: number): Array<{ path: string; mtimeMs: number }> {
-  if (!existsSync(PROJECTS_DIR)) return [];
+  if (!existsSync(projectsDir())) return [];
   const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
   const out: Array<{ path: string; mtimeMs: number }> = [];
-  for (const dir of readdirSync(PROJECTS_DIR)) {
-    const dirPath = join(PROJECTS_DIR, dir);
+  for (const dir of readdirSync(projectsDir())) {
+    const dirPath = join(projectsDir(), dir);
     let entries: string[];
     try {
       if (!statSync(dirPath).isDirectory()) continue;

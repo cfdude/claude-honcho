@@ -7,19 +7,20 @@
 
 import { join } from "path";
 import { writeFileSync, unlinkSync } from "fs";
-import { homeDirPath } from "./home.js";
-
-const DIR = join(homeDirPath(), ".honcho");
+import { honchoDir } from "./home.js";
 
 // Per-window files keyed by Claude Code's session_id (the one field guaranteed
 // identical between hook stdin and statusLine stdin). Falls back to a global
 // file when no session_id is available, so multiple windows don't clobber each
 // other's link/phase.
+//
+// honchoDir() is resolved lazily at call time (not captured into a module-level
+// const) so it honors a `HOME` redirected after this module was imported.
 function stateFile(sessionId?: string): string {
-  return join(DIR, sessionId ? `state-${sessionId}.json` : "state.json");
+  return join(honchoDir(), sessionId ? `state-${sessionId}.json` : "state.json");
 }
 function sessionFile(sessionId?: string): string {
-  return join(DIR, sessionId ? `session-${sessionId}.json` : "session.json");
+  return join(honchoDir(), sessionId ? `session-${sessionId}.json` : "session.json");
 }
 
 export type MemoryPhase =

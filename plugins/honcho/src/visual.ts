@@ -326,12 +326,16 @@ export function addSystemMessage(existingJson: any, message: string): any {
 
 import { join } from "path";
 import { appendFileSync, mkdirSync, existsSync, writeFileSync } from "fs";
-import { homeDirPath } from "./home.js";
+import { honchoDir } from "./home.js";
 
-const VERBOSE_LOG = join(homeDirPath(), ".honcho", "verbose.log");
+// Lazily resolved (not a module-level const) so a `HOME` redirected after
+// import (e.g. by tests) is honored — see home.ts's honchoDir().
+function verboseLogPath(): string {
+  return join(honchoDir(), "verbose.log");
+}
 
 function ensureVerboseLog(): void {
-  const dir = join(homeDirPath(), ".honcho");
+  const dir = honchoDir();
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }
@@ -341,7 +345,7 @@ function writeVerbose(text: string): void {
   if (!isLoggingEnabled()) return;
   ensureVerboseLog();
   const timestamp = new Date().toISOString().split("T")[1].split(".")[0];
-  appendFileSync(VERBOSE_LOG, `[${timestamp}] ${text}\n`);
+  appendFileSync(verboseLogPath(), `[${timestamp}] ${text}\n`);
 }
 
 /**
@@ -373,14 +377,14 @@ export function verboseList(label: string, items: string[] | null | undefined): 
 export function clearVerboseLog(): void {
   if (!isLoggingEnabled()) return;
   ensureVerboseLog();
-  writeFileSync(VERBOSE_LOG, "");
+  writeFileSync(verboseLogPath(), "");
 }
 
 /**
  * Get the verbose log path
  */
 export function getVerboseLogPath(): string {
-  return VERBOSE_LOG;
+  return verboseLogPath();
 }
 
 // ============================================

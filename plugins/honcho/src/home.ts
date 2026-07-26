@@ -2,10 +2,11 @@
 //
 // The single definition of "where is the user's home directory" for this plugin.
 //
-// This module MUST import nothing but `node:os`. It is imported by the lowest-level
-// modules (config, cache, log, state, visual, project-config), so any additional
-// dependency risks an import cycle.
+// This module MUST import nothing but `node:os` and `node:path`. It is imported by
+// the lowest-level modules (config, cache, log, state, visual, project-config), so
+// any additional dependency risks an import cycle.
 import { homedir } from "node:os";
+import { join } from "node:path";
 
 /**
  * The user's home directory, honoring $HOME.
@@ -21,4 +22,13 @@ import { homedir } from "node:os";
  */
 export function homeDirPath(): string {
   return process.env.HOME || homedir();
+}
+
+/**
+ * The plugin's `~/.honcho` directory, resolved lazily at call time (not captured
+ * into a module-level const) so it honors a `HOME` redirected after this module
+ * was imported — e.g. by tests.
+ */
+export function honchoDir(): string {
+  return join(homeDirPath(), ".honcho");
 }
