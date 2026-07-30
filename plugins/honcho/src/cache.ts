@@ -347,7 +347,17 @@ export function appendClaudeWork(workDescription: string): void {
     try {
       needsHeader = statSync(target).size === 0 || !loadClaudeLocalContext().includes("## Recent Activity");
     } catch {
-      needsHeader = false;
+      // statSync threw, so the target is not there (ENOENT) or is unreadable
+      // (EACCES). ENOENT means we lost the create above for a reason OTHER than
+      // "someone else created it" — linkSync also fails with EPERM/ENOSYS on a
+      // filesystem without hard links (exFAT/FAT32, some network and FUSE
+      // mounts) — and the appendFileSync below is about to create the file, so
+      // it must carry the header. Defaulting to false here would create a
+      // header-LESS file, which the trim path can never find "## Recent
+      // Activity" in, so it would grow forever: exactly the failure this
+      // re-header exists to prevent, on every cold start rather than as a race.
+      // On EACCES the append fails too, so true is harmless there.
+      needsHeader = true;
     }
     appendFileSync(target, needsHeader ? CLAUDE_CONTEXT_HEADER + entry : entry);
   }
