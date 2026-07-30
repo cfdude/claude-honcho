@@ -294,10 +294,31 @@ export function visStatusLine(text: string): string {
   return showsStatus() ? text : "";
 }
 
-/** The "captured: …" line, formatted. Returns "" below "info". */
-export function visCaptureLine(summary: string): string {
+/**
+ * The "captured: …" line, formatted. Returns "" below "info".
+ *
+ * `uploaded` distinguishes a capture that reached Honcho from one that only hit
+ * the local claude-context.md. The local append happens either way (so
+ * "captured" is never a lie), but when the Honcho upload was SKIPPED — e.g.
+ * `saveToolUse` isn't opted in — a bare "captured:" reads as if memory was
+ * written remotely when nothing was sent. "(local only)" says what actually
+ * happened. Defaults to true so the one-arg call site keeps its exact wording.
+ */
+export function visCaptureLine(summary: string, uploaded = true): string {
   if (!showsStatus()) return "";
-  return formatLine("out", "post-tool-use", `captured: ${summary}`);
+  const label = uploaded ? "captured" : "captured (local only)";
+  return formatLine("out", "post-tool-use", `${label}: ${summary}`);
+}
+
+/**
+ * A "took Nms" self-report line for a hook. Verbose ONLY — hook duration is a
+ * diagnostic, and none of this was observable from inside the plugin before
+ * (Claude Code's own hook timeout was never seen to fire). Returns "" at every
+ * other level so it can be folded into emitLines() unconditionally.
+ */
+export function visDurationLine(hookName: string, ms: number): string {
+  if (!showsDetail()) return "";
+  return formatLine("info", hookName, `took ${ms}ms`);
 }
 
 /**
@@ -308,13 +329,25 @@ export function visCapture(summary: string): void {
 }
 
 /**
- * Print the capture line and (if the upload failed) the error, as ONE JSON
- * object. post-tool-use has two things to say per invocation but only one
- * stdout write to say them in — see emitLines(). At "error"/"off" the capture
- * line drops out and only the failure survives.
+ * Print the capture line, (if the upload failed) the error, and (verbose only)
+ * the hook duration, as ONE JSON object. post-tool-use has several things to say
+ * per invocation but only one stdout write to say them in — see emitLines().
+ * At "error"/"off" the capture and duration lines drop out and only the failure
+ * survives; with no failure the body is empty and NO systemMessage is emitted.
+ *
+ * `opts.uploaded === false` means the Honcho upload was skipped (config opt-out),
+ * which is NOT an error and must not read like a successful upload.
  */
-export function visCaptureWithError(summary: string, error?: string | null): void {
-  emitLines([visCaptureLine(summary), error ? visErrorLine("post-tool-use", error) : ""]);
+export function visCaptureWithError(
+  summary: string,
+  error?: string | null,
+  opts: { uploaded?: boolean; durationMs?: number } = {},
+): void {
+  emitLines([
+    visCaptureLine(summary, opts.uploaded ?? true),
+    error ? visErrorLine("post-tool-use", error) : "",
+    opts.durationMs === undefined ? "" : visDurationLine("post-tool-use", opts.durationMs),
+  ]);
 }
 
 /**

@@ -1,5 +1,14 @@
 import { join } from "path";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import {
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  appendFileSync,
+  renameSync,
+  unlinkSync,
+  statSync,
+} from "fs";
 import { getContextRefreshConfig, getLocalContextConfig } from "./config.js";
 import { honchoDir } from "./home.js";
 
@@ -227,36 +236,140 @@ export function loadClaudeLocalContext(): string {
   }
 }
 
+// No trailing newline: every entry begins with "\n", and the pre-existing file
+// shape had no blank line between the heading and the first entry.
+const CLAUDE_CONTEXT_HEADER = `# CLAUDE Work Context\n\nAuto-generated log of CLAUDE's recent work.\n\n## Recent Activity`;
+
+/**
+ * Overwrite claude-context.md ATOMICALLY: write a uniquely-named temp file in
+ * the SAME directory (rename is only atomic within one filesystem), then
+ * renameSync over the target. A plain writeFileSync truncates first, so a reader
+ * — or a crash — landing mid-write saw a torn/empty file. ~15 concurrent Claude
+ * Code sessions all fire post-tool-use, so this is a real interleaving, not a
+ * theoretical one.
+ *
+ * The temp file is unlinked on failure so a dead write can never leave
+ * `claude-context.md.tmp-*` litter in ~/.honcho.
+ */
 export function saveClaudeLocalContext(content: string): void {
   ensureCacheDir();
-  writeFileSync(claudeContextFile(), content);
+  const target = claudeContextFile();
+  // Resolved lazily inside the function (never a module-level const) so a
+  // redirected HOME is honored — see home.ts's honchoDir().
+  const tmp = `${target}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
+  try {
+    writeFileSync(tmp, content);
+    renameSync(tmp, target);
+  } catch (e) {
+    try {
+      if (existsSync(tmp)) unlinkSync(tmp);
+    } catch {
+      // best-effort cleanup; the original error is what matters
+    }
+    throw e;
+  }
 }
 
+/**
+ * Append one activity entry, then trim the file back to `maxEntries`.
+ *
+ * Concurrency guarantees (this used to be a plain read-modify-write — full read,
+ * in-memory rewrite, full overwrite — so with ~15 concurrent sessions the
+ * interleaving A-read/B-read/A-write/B-write silently dropped A's entry):
+ *
+ *  - **No corruption, ever.** The entry goes on with O_APPEND (`appendFileSync`),
+ *    which the OS applies at the current end of file, so two concurrent appends
+ *    can neither interleave within a line nor overwrite each other. The trim
+ *    rewrite goes through saveClaudeLocalContext()'s temp-file + rename, so a
+ *    reader sees either the old file or the new one, never a partial one.
+ *  - **No lost appends on the hot path.** The common case (file exists, under the
+ *    entry cap) is append-only — nothing is read, so nothing can be clobbered.
+ *  - **Narrow lost-entry window in two cold paths, by design.** (a) Cold start
+ *    writes header+first entry in a single exclusive (`wx`) create, so a losing
+ *    racer falls through to a plain append instead of clobbering. (b) The trim
+ *    rewrite re-checks the file size right before renaming and retries if it
+ *    changed; a concurrent append inside that last sliver can still be dropped.
+ *
+ * A lockfile was deliberately NOT used: a hook killed mid-write would strand the
+ * lock and break memory capture for every session — far worse than occasionally
+ * losing one cache entry.
+ */
 export function appendClaudeWork(workDescription: string): void {
   ensureCacheDir();
+  const target = claudeContextFile();
   const timestamp = new Date().toISOString();
   const entry = `\n- [${timestamp}] ${workDescription}`;
 
-  let existing = loadClaudeLocalContext();
-  if (!existing) {
-    existing = `# CLAUDE Work Context\n\nAuto-generated log of CLAUDE's recent work.\n\n## Recent Activity\n`;
+  // Cold start: create header + this entry in ONE exclusive write. Doing the
+  // header and the entry as separate calls would let a concurrent append land
+  // bytes before the header did. A writer that loses the `wx` race falls
+  // through to a plain append, so no entry is lost.
+  let created = false;
+  if (!existsSync(target)) {
+    try {
+      writeFileSync(target, CLAUDE_CONTEXT_HEADER + entry, { flag: "wx" });
+      created = true;
+    } catch {
+      // Another process won the create race — fall through and append instead.
+    }
   }
 
-  // Keep only last N entries to prevent file from growing too large
+  if (!created) {
+    // An EMPTY (or header-less) file must be re-headered, not just appended to:
+    // the old truncate-then-write left a zero-byte file behind whenever a hook
+    // was killed mid-write, and without the header the trim below can never find
+    // "## Recent Activity" — so the file would grow forever. The old code got
+    // this for free because loadClaudeLocalContext() returns "" for a missing
+    // OR empty OR unreadable file and the header was rebuilt in all three cases.
+    // Appending header+entry (rather than overwriting) keeps the no-lost-entry
+    // property intact even if a racer appends at the same moment.
+    let needsHeader = false;
+    try {
+      needsHeader = statSync(target).size === 0 || !loadClaudeLocalContext().includes("## Recent Activity");
+    } catch {
+      needsHeader = false;
+    }
+    appendFileSync(target, needsHeader ? CLAUDE_CONTEXT_HEADER + entry : entry);
+  }
+
+  // Keep only the last N entries so the file can't grow without bound.
   let maxEntries = getLocalContextConfig().maxEntries;
   if (!maxEntries) {
     maxEntries = 10;
   }
-  const lines = existing.split("\n");
-  const activityStart = lines.findIndex((l) => l.includes("## Recent Activity"));
-  if (activityStart !== -1) {
+
+  // Retry-on-change: if the file grew between the read and the rename, another
+  // session appended and our rewrite would drop it — re-read and try again.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    let sizeBefore: number;
+    try {
+      sizeBefore = statSync(target).size;
+    } catch {
+      return;
+    }
+
+    const existing = loadClaudeLocalContext();
+    const lines = existing.split("\n");
+    const activityStart = lines.findIndex((l) => l.includes("## Recent Activity"));
+    if (activityStart === -1) return;
+
     const header = lines.slice(0, activityStart + 1);
     const activities = lines.slice(activityStart + 1).filter((l) => l.trim());
-    const recentActivities = activities.slice(-(maxEntries - 1)); // Keep last N-1, add 1 new
-    existing = [...header, ...recentActivities].join("\n");
-  }
+    if (activities.length <= maxEntries) return; // nothing to trim — the hot path
 
-  saveClaudeLocalContext(existing + entry);
+    const trimmed = [...header, ...activities.slice(-maxEntries)].join("\n");
+
+    let sizeNow: number;
+    try {
+      sizeNow = statSync(target).size;
+    } catch {
+      return;
+    }
+    if (sizeNow !== sizeBefore) continue; // someone appended; re-read and retry
+
+    saveClaudeLocalContext(trimmed);
+    return;
+  }
 }
 
 // ============================================

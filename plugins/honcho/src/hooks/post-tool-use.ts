@@ -197,7 +197,55 @@ function formatToolSummary(
   }
 }
 
+/**
+ * Three-valued outcome of the Honcho upload. Two values were not enough: the
+ * old code wrapped logToHonchoAsync in `.then(() => null, e => …)`, so a SKIPPED
+ * upload (saveMessages off / saveToolUse not opted in — the default) produced
+ * exactly the same `null` as a delivered one, and the terminal printed
+ * "captured: …" for every turn on a config that had uploaded nothing.
+ */
+type UploadOutcome =
+  | { status: "uploaded" }
+  | { status: "skipped"; reason: string }
+  | { status: "error"; error: string };
+
+/**
+ * Upper bound on the awaited upload. Claude Code's own hook timeout was observed
+ * never firing across 4,152 runs, so an unbounded await here can wedge a turn
+ * indefinitely. 5s is deliberately close to (and no looser than) user-prompt's
+ * 4000ms FETCH_TIMEOUT_MS: this is ONE session.addMessages POST rather than an
+ * interactive fetch fan-out, so if it hasn't landed in 5s something is wrong and
+ * saying so beats blocking the turn. On timeout we report a failure through the
+ * same path as a real error, so it survives at "error" level.
+ */
+const UPLOAD_TIMEOUT_MS = 5000;
+
+/**
+ * Bound `p` with a timeout, mapping BOTH a rejection and a timeout onto the
+ * error variant. Mirrors raceTimeout() in user-prompt.ts, but deliberately does
+ * NOT collapse to `null`: null there is indistinguishable from "nothing was
+ * requested", which is the exact confusion this hook is fixing. The timer is
+ * cleared when the upload wins so nothing keeps the loop alive.
+ */
+async function withUploadTimeout(p: Promise<UploadOutcome>, ms: number): Promise<UploadOutcome> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      p.catch((e): UploadOutcome => ({ status: "error", error: `capture upload failed: ${e}` })),
+      new Promise<UploadOutcome>((resolve) => {
+        timer = setTimeout(
+          () => resolve({ status: "error", error: `capture upload timed out after ${ms}ms` }),
+          ms,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 export async function handlePostToolUse(): Promise<void> {
+  const hookStart = Date.now();
   const config = loadConfig();
   if (!config) {
     process.exit(0);
@@ -236,38 +284,46 @@ export async function handlePostToolUse(): Promise<void> {
   // INSTANT: Update local claude context file (~2ms)
   appendClaudeWork(summary);
 
-  // Upload to Honcho and wait for completion. The failure was previously
-  // written to the log file only — invisible in the terminal even though a
-  // dropped write means memory silently didn't happen.
-  const uploadError = await logToHonchoAsync(config, cwd, summary).then(
-    () => null,
-    (e) => {
-      logHook("post-tool-use", `Upload failed: ${e}`, { error: String(e) });
-      return `capture upload failed: ${e}`;
-    },
-  );
+  // Upload to Honcho and wait for completion, bounded by UPLOAD_TIMEOUT_MS. The
+  // failure was previously written to the log file only — invisible in the
+  // terminal even though a dropped write means memory silently didn't happen.
+  const outcome = await withUploadTimeout(logToHonchoAsync(config, cwd, summary), UPLOAD_TIMEOUT_MS);
+  if (outcome.status === "error") {
+    logHook("post-tool-use", `Upload failed: ${outcome.error}`, { error: outcome.error });
+  } else if (outcome.status === "skipped") {
+    logHook("post-tool-use", `Upload skipped: ${outcome.reason}`, { skipped: outcome.reason });
+  }
 
-  // ONE stdout write carrying both the capture line and any failure — Claude
-  // Code parses hook stdout as a single JSON document, so this hook must not
-  // print twice. At "error"/"off" the capture line drops and only the failure
-  // (if any) survives.
-  visCaptureWithError(summary, uploadError);
+  // ONE stdout write carrying the capture line, any failure, and (verbose only)
+  // the hook duration — Claude Code parses hook stdout as a single JSON
+  // document, so this hook must not print twice. At "error"/"off" the capture
+  // and duration lines drop and only the failure (if any) survives.
+  visCaptureWithError(summary, outcome.status === "error" ? outcome.error : null, {
+    uploaded: outcome.status === "uploaded",
+    durationMs: Date.now() - hookStart,
+  });
 
   process.exit(0);
 }
 
-async function logToHonchoAsync(config: any, cwd: string, summary: string): Promise<void> {
+async function logToHonchoAsync(config: any, cwd: string, summary: string): Promise<UploadOutcome> {
   // Skip if message saving is disabled, or if [Tool] logging isn't opted in.
-  if (config.saveMessages === false || config.saveToolUse !== true) {
-    return;
+  if (config.saveMessages === false) {
+    return { status: "skipped", reason: "saveMessages is false" };
+  }
+  if (config.saveToolUse !== true) {
+    return { status: "skipped", reason: "saveToolUse not enabled" };
   }
 
   const honcho = new Honcho(getHonchoClientOptions(config));
   const sessionName = getSessionName(cwd);
 
-  // Get session and peer using new fluent API
-  const session = await honcho.session(sessionName);
-  const aiPeer = await honcho.peer(config.aiPeer);
+  // Session and peer lookups are independent — resolve them concurrently rather
+  // than paying two sequential round-trips on every captured tool call.
+  const [session, aiPeer] = await Promise.all([
+    honcho.session(sessionName),
+    honcho.peer(config.aiPeer),
+  ]);
 
   // Log the tool use with instance_id and session_affinity for project-scoped fact extraction
   logApiCall("session.addMessages", "POST", `tool: ${summary.slice(0, 50)}`);
@@ -281,4 +337,6 @@ async function logToHonchoAsync(config: any, cwd: string, summary: string): Prom
       },
     }),
   ]);
+
+  return { status: "uploaded" };
 }
