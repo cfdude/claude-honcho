@@ -86,8 +86,13 @@ test("concurrent appendClaudeWork() writers neither corrupt the file nor lose en
     const seen = new Set(entryLines.map((l) => l.replace(/^- \[[^\]]+\]\s*/, "")));
     expect(seen.size).toBe(WRITERS);
 
-    // No temp files left behind by the atomic-write path.
-    expect(readdirSync(join(fakeHome, ".honcho")).filter((f) => f.includes(".tmp-"))).toEqual([]);
+    // No temp files left behind by either atomic path: `.tmp-*` from the trim
+    // rewrite, `.new-*` from the hard-linked cold-start create.
+    expect(
+      readdirSync(join(fakeHome, ".honcho")).filter(
+        (f) => f.includes(".tmp-") || f.includes(".new-"),
+      ),
+    ).toEqual([]);
   });
 });
 

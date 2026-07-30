@@ -7,6 +7,7 @@ import {
   appendFileSync,
   renameSync,
   unlinkSync,
+  linkSync,
   statSync,
 } from "fs";
 import { getContextRefreshConfig, getLocalContextConfig } from "./config.js";
@@ -284,11 +285,16 @@ export function saveClaudeLocalContext(content: string): void {
  *    reader sees either the old file or the new one, never a partial one.
  *  - **No lost appends on the hot path.** The common case (file exists, under the
  *    entry cap) is append-only — nothing is read, so nothing can be clobbered.
- *  - **Narrow lost-entry window in two cold paths, by design.** (a) Cold start
- *    writes header+first entry in a single exclusive (`wx`) create, so a losing
- *    racer falls through to a plain append instead of clobbering. (b) The trim
- *    rewrite re-checks the file size right before renaming and retries if it
- *    changed; a concurrent append inside that last sliver can still be dropped.
+ *  - **Atomic cold start.** Header+first entry are written to a temp file and
+ *    hard-linked into place, so the target only ever becomes visible complete.
+ *    An exclusive-but-not-atomic `wx` create was not enough: it left a zero-byte
+ *    window in which a concurrent appender either added a second header (it saw
+ *    size 0) or wrote at offset 0 and was then overwritten by the creator's own
+ *    write. link() still fails when the target exists, so the losing racer falls
+ *    through to a plain append and no entry is lost.
+ *  - **Narrow lost-entry window in ONE cold path, by design.** The trim rewrite
+ *    re-checks the file size right before renaming and retries if it changed; a
+ *    concurrent append inside that last sliver can still be dropped.
  *
  * A lockfile was deliberately NOT used: a hook killed mid-write would strand the
  * lock and break memory capture for every session — far worse than occasionally
@@ -300,17 +306,31 @@ export function appendClaudeWork(workDescription: string): void {
   const timestamp = new Date().toISOString();
   const entry = `\n- [${timestamp}] ${workDescription}`;
 
-  // Cold start: create header + this entry in ONE exclusive write. Doing the
-  // header and the entry as separate calls would let a concurrent append land
-  // bytes before the header did. A writer that loses the `wx` race falls
-  // through to a plain append, so no entry is lost.
+  // Cold start: the target must APPEAR already holding header + this entry.
+  // Exclusive is not sufficient — it has to be ATOMIC. `writeFileSync(..., "wx")`
+  // creates a ZERO-BYTE file and only then writes into it, which left two real
+  // races against a concurrent appender landing inside that window:
+  //   (a) it stat'd size 0, concluded the file was header-less, and appended a
+  //       SECOND header; or
+  //   (b) it appended at offset 0 and had its bytes overwritten when the
+  //       creator's own write (which starts at offset 0) landed — a lost entry.
+  // Writing a temp file first and hard-linking it into place fixes both: the
+  // target becomes visible only once it is complete, and link() still fails if
+  // the target already exists, so exclusivity is preserved. The loser of the
+  // race falls through to a plain O_APPEND write, so no entry is lost.
   let created = false;
   if (!existsSync(target)) {
+    const tmp = `${target}.new-${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
     try {
-      writeFileSync(target, CLAUDE_CONTEXT_HEADER + entry, { flag: "wx" });
+      writeFileSync(tmp, CLAUDE_CONTEXT_HEADER + entry);
+      linkSync(tmp, target);
       created = true;
     } catch {
       // Another process won the create race — fall through and append instead.
+    } finally {
+      // Never leave `claude-context.md.new-*` litter in ~/.honcho, whether the
+      // link succeeded (the content now lives under the real name) or failed.
+      try { unlinkSync(tmp); } catch { /* nothing to clean up */ }
     }
   }
 
