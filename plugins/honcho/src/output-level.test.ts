@@ -378,11 +378,18 @@ const CTX = {
 };
 const DIALECTIC = { answer: "Background: the user self-hosts Honcho.", reasoning: "medium" as const, elapsedMs: 900 };
 
+// emitPerTurn's parameter list grew upstream (three split context components
+// instead of one), so these call sites pass the new shape. Only the ARGUMENTS
+// changed — every assertion below is unchanged. `showContents: []` is the
+// default, so contents still print only at "verbose".
+const EMIT_CONFIG = { peerName: "robsherman", aiPeer: "claude" };
+const EMIT_INJECTION = { perTurn: ["userContext", "dialectic"] as const, showContents: [] } as any;
+
 /** Emit one turn at `level` and return the parsed hook JSON (or null if nothing printed). */
 function emitAt(level: OutputLevel): any {
   setOutputLevel(level);
   const lines = captureStdout(() =>
-    emitPerTurn("robsherman", CTX, DIALECTIC, { sessionLink: "view your session in honcho GUI: https://example/x" })
+    emitPerTurn(EMIT_CONFIG, EMIT_INJECTION, CTX, null, null, DIALECTIC, { sessionLink: "view your session in honcho GUI: https://example/x" })
   );
   return lines.length ? JSON.parse(lines[0]!) : null;
 }
@@ -420,7 +427,7 @@ test("INVARIANT holds across all four levels; only systemMessage varies", () => 
 test("at 'off' the session-link banner does not leak through as a systemMessage", () => {
   setOutputLevel("off");
   const lines = captureStdout(() =>
-    emitPerTurn("robsherman", null, null, { sessionLink: "view your session in honcho GUI: https://example/x" })
+    emitPerTurn(EMIT_CONFIG, EMIT_INJECTION, null, null, null, null, { sessionLink: "view your session in honcho GUI: https://example/x" })
   );
   expect(lines).toEqual([]);
 });
@@ -428,7 +435,7 @@ test("at 'off' the session-link banner does not leak through as a systemMessage"
 test("a failure line still reaches the user at 'error' even with nothing to inject", () => {
   setOutputLevel("error");
   const lines = captureStdout(() =>
-    emitPerTurn("robsherman", null, null, {
+    emitPerTurn(EMIT_CONFIG, EMIT_INJECTION, null, null, null, null, {
       sessionLink: "view your session in honcho GUI: https://example/x",
       extraLines: [visErrorLine("user-prompt", "context fetch failed: 403")],
     })

@@ -185,10 +185,11 @@ export function visDiagnostics(
 
 /**
  * Build the injection systemMessage for the user-prompt hook: a one-line status
- * summary followed by the injected conclusions as bullets. The stable profile
- * block is intentionally omitted here — it lives in the injection log, not in
- * every turn's transcript. `matched` is only set for high-signal topics, so a
- * low-signal fuzzy fallback query is never surfaced as a bogus match.
+ * summary, and with `showContents` the injected conclusions as bullets. The
+ * stable profile block is intentionally omitted here — it lives in the injection
+ * log, not in every turn's transcript. `matched` is only set for high-signal
+ * topics, so a low-signal fuzzy fallback query is never surfaced as a bogus
+ * match.
  */
 /**
  * Max characters of a single conclusion shown in the terminal summary.
@@ -211,6 +212,8 @@ export function visInjectionMessage(hookName: string, opts: {
   matched?: string[];
   /** Overrides the matched suffix, e.g. "prompt" → "(query: prompt)". */
   queryLabel?: string;
+  /** Print the conclusions, not just the count. */
+  showContents?: boolean;
 }): string {
   // "error"/"off": a healthy injection is not a failure — say nothing.
   if (!showsStatus()) return "";
@@ -222,24 +225,52 @@ export function visInjectionMessage(hookName: string, opts: {
       ? `injected ${count} ${noun} (matched: ${opts.matched.join(", ")})`
       : `injected ${count} ${noun}`;
   const summary = formatLine("in", hookName, head);
-  // "info" is the default and deliberately prints the header ONLY — reprinting
-  // every conclusion on every turn is the noise this dial exists to fix.
-  if (!showsDetail()) return summary;
+  // Contents print when EITHER the global dial is at "verbose" (show me
+  // everything) OR this component was explicitly opted in via
+  // injection.showContents. At the default "info" with no opt-in we print the
+  // header alone — reprinting every conclusion on every turn is the noise the
+  // dial exists to fix. Each bullet stays bounded either way: an opted-in
+  // component should not be able to dump several KB per turn.
+  if (!showsDetail() && !opts.showContents) return summary;
   const body = opts.conclusions.map(c => `  ${sym.bullet} ${previewConclusion(c)}`).join("\n");
   return body ? `${summary}\n${body}` : summary;
 }
 
 /**
  * Build the per-turn systemMessage for the "dialectic" component: a status line
- * (tier · elapsed) followed by the full reasoned answer, so the user sees
- * exactly what was injected. The answer is prose and can be long — that's the
- * intended trade-off; it also lands in additionalContext for the model.
+ * (tier · elapsed), and with `showContents` the full reasoned answer, so the
+ * user sees exactly what was injected. The answer is prose and can be long —
+ * that's the trade-off for showing it; it lands in additionalContext for the
+ * model either way.
  */
-export function visDialecticMessage(hookName: string, reasoning: string, elapsedMs: number, answer: string): string {
+export function visDialecticMessage(hookName: string, reasoning: string, elapsedMs: number, answer: string, showContents = false): string {
   if (!showsStatus()) return "";
   const head = formatLine("in", hookName, `injected dialectic (${reasoning} · ${(elapsedMs / 1000).toFixed(1)}s)`);
-  if (!showsDetail()) return head;
+  if (!showsDetail() && !showContents) return head;
   return answer.trim() ? `${head}\n${answer.trim()}` : head;
+}
+
+/**
+ * Build the per-turn systemMessage for the "sessionContext" component: a
+ * status line with the message and token counts, and with `showContents` every
+ * injected message as a bullet. Each message is collapsed to a single truncated
+ * line — the full text goes to additionalContext; this listing is for
+ * visibility into what was injected. The count has no display cutoff: it's
+ * bounded upstream by the sessionContextTokens budget passed to
+ * session.context().
+ */
+export function visSessionContextMessage(hookName: string, lines: string[], tokenCount: number, showContents = false): string {
+  if (!showsStatus()) return "";
+  const noun = lines.length === 1 ? "message" : "messages";
+  const head = formatLine("in", hookName, `injected ${lines.length} session ${noun} (~${tokenCount} tokens)`);
+  if (!showsDetail() && !showContents) return head;
+  const body = lines
+    .map((l) => {
+      const flat = l.replace(/\s+/g, " ").trim();
+      return `  ${sym.bullet} ${flat.length > 150 ? `${flat.slice(0, 149)}…` : flat}`;
+    })
+    .join("\n");
+  return body ? `${head}\n${body}` : head;
 }
 
 /**

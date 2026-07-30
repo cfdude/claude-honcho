@@ -33,8 +33,10 @@ import {
   type PerTurnComponent,
   SESSION_START_COMPONENTS,
   PER_TURN_COMPONENTS,
+  normalizePerTurn,
   REASONING_LEVELS,
   getObservationMode,
+  getPluginVersion,
 } from "../config.js";
 import { findProjectConfig } from "../project-config.js";
 import { honchoSessionUrl } from "../styles.js";
@@ -134,6 +136,7 @@ function handleGetConfig(cwd: string) {
     statusline: cfg.statusline ?? "on",
     localContext: cfg.localContext ?? {},
     injection: cfg.injection ?? {},
+    rememberTool: cfg.rememberTool === true,
     enabled: cfg.enabled !== false,
     logging: cfg.logging !== false,
     saveMessages: cfg.saveMessages !== false,
@@ -574,11 +577,23 @@ export function handleSetConfig(args: Record<string, unknown>) {
     }
 
     case "injection.perTurn": {
-      const arr = validateComponentArray(value, PER_TURN_COMPONENTS, field);
+      // Accept the pre-split "context" name and store its replacement.
+      const raw = coerceStringArray(value);
+      const arr = validateComponentArray(raw ? normalizePerTurn(raw) : value, PER_TURN_COMPONENTS, field);
       if (!Array.isArray(arr)) return arr;
       previousValue = cfg.injection?.perTurn;
       if (!cfg.injection) cfg.injection = {};
       cfg.injection.perTurn = arr as PerTurnComponent[];
+      break;
+    }
+
+    case "injection.showContents": {
+      const raw = coerceStringArray(value);
+      const arr = validateComponentArray(raw ? normalizePerTurn(raw) : value, PER_TURN_COMPONENTS, field);
+      if (!Array.isArray(arr)) return arr;
+      previousValue = cfg.injection?.showContents;
+      if (!cfg.injection) cfg.injection = {};
+      cfg.injection.showContents = arr as PerTurnComponent[];
       break;
     }
 
@@ -598,6 +613,25 @@ export function handleSetConfig(args: Record<string, unknown>) {
       previousValue = cfg.injection?.searchMaxDistance;
       if (!cfg.injection) cfg.injection = {};
       cfg.injection.searchMaxDistance = Number(value);
+      break;
+
+    case "injection.sessionContextTokens": {
+      const tokens = Number(value);
+      if (!Number.isFinite(tokens) || tokens <= 0) {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ success: false, error: "injection.sessionContextTokens must be a positive number" }, null, 2) }],
+          isError: true,
+        };
+      }
+      previousValue = cfg.injection?.sessionContextTokens;
+      if (!cfg.injection) cfg.injection = {};
+      cfg.injection.sessionContextTokens = tokens;
+      break;
+    }
+
+    case "rememberTool":
+      previousValue = cfg.rememberTool;
+      cfg.rememberTool = Boolean(value);
       break;
 
     case "injection.searchQuerySource":
@@ -694,6 +728,7 @@ export function handleSetConfig(args: Record<string, unknown>) {
     statusline: cfg.statusline ?? "on",
     localContext: cfg.localContext ?? {},
     injection: cfg.injection ?? {},
+    rememberTool: cfg.rememberTool === true,
     enabled: cfg.enabled !== false,
     logging: cfg.logging !== false,
     saveMessages: cfg.saveMessages !== false,
@@ -730,6 +765,50 @@ export function handleSetConfig(args: Record<string, unknown>) {
 /** Client-side ceiling for dialectic chat calls. */
 const DIALECTIC_TIMEOUT_MS = 120_000;
 
+/** Reasoning tiers the remember tool exposes. `minimal` is too weak to be
+ *  worth a fan-out slot; `max` runs ≈80s, unusable when a batch blocks a turn. */
+const REMEMBER_REASONING_LEVELS = ["low", "medium", "high"] as const;
+/** Hard bound on the fan-out — not a config knob. */
+const REMEMBER_MAX_QUERIES = 5;
+
+/** The honcho_remember tool definition. Registered only when the root
+ *  `rememberTool` config is on; its description is where the use-often
+ *  pressure lives, so the encouragement rides the schema itself. */
+const REMEMBER_TOOL = {
+  name: "honcho_remember",
+  description:
+    "Recall what Honcho knows about the user by asking several questions at once. " +
+    "Fans out up to 5 parallel dialectic queries and returns a labeled, per-question answer. " +
+    "Use this liberally and proactively — before starting a task, whenever the user's " +
+    "preferences, past decisions, or history could shape your response, when you're " +
+    "about to guess at something they've likely told you before, or when the user asks to " +
+    "catch up, resume, or recall what you were working on together ('where are we', " +
+    "'what did we just do'). Prefer asking several " +
+    "focused questions in one call over one broad question. Pick reasoning_level by need: " +
+    "'low' for quick factual lookups, 'medium' for general recall, 'high' for questions " +
+    "that need real reasoning over the user's context.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      queries: {
+        type: "array",
+        items: { type: "string" },
+        minItems: 1,
+        maxItems: REMEMBER_MAX_QUERIES,
+        description: `1–${REMEMBER_MAX_QUERIES} natural-language questions about the user, dispatched concurrently.`,
+      },
+      reasoning_level: {
+        type: "string",
+        enum: [...REMEMBER_REASONING_LEVELS],
+        description:
+          "Reasoning budget applied to every query in this call. 'low' = quick lookups, " +
+          "'medium' = general recall, 'high' = complex reasoning over the user's context.",
+      },
+    },
+    required: ["queries", "reasoning_level"],
+  },
+};
+
 export async function runMcpServer(): Promise<void> {
   setDetectedHost("claude_code");
   const config = loadConfig();
@@ -741,7 +820,7 @@ export async function runMcpServer(): Promise<void> {
   const server = new Server(
     {
       name: "honcho",
-      version: "0.2.6",
+      version: getPluginVersion(),
     },
     {
       capabilities: {
@@ -762,10 +841,16 @@ export async function runMcpServer(): Promise<void> {
     maxRetries: 0,
   });
 
+  // honcho_remember is opt-in. Resolved once at startup — toggling rememberTool
+  // takes effect on next restart, consistent with the plugin's "restart Claude
+  // Code after MCP changes" policy.
+  const rememberEnabled = config.rememberTool === true;
+
   // List available tools
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     return {
       tools: [
+        ...(rememberEnabled ? [REMEMBER_TOOL] : []),
         {
           name: "search",
           description: "Search across messages using semantic search. Defaults to the current session; use scope='workspace' to search across all sessions.",
@@ -920,18 +1005,21 @@ export async function runMcpServer(): Promise<void> {
                   "localContext.maxEntries",
                   "injection.sessionStart",
                   "injection.perTurn",
+                  "injection.showContents",
                   "injection.searchTopK",
                   "injection.maxConclusions",
                   "injection.searchMaxDistance",
                   "injection.searchQuerySource",
+                  "injection.sessionContextTokens",
                   "injection.dialecticTemplate",
                   "injection.dialecticReasoning",
+                  "rememberTool",
                   "sessions.set",
                   "sessions.remove",
                 ],
               },
               value: {
-                description: "New value. For sessions.set: {path, name}. For sessions.remove: {path}. For injection.sessionStart / injection.perTurn: a string array of component names (e.g. [\"summary\",\"peerCard\"]).",
+                description: "New value. For sessions.set: {path, name}. For sessions.remove: {path}. For injection.sessionStart / injection.perTurn / injection.showContents: a string array of component names (e.g. [\"summary\",\"peerCard\"]).",
               },
               confirm: {
                 type: "boolean",
@@ -1080,6 +1168,92 @@ export async function runMcpServer(): Promise<void> {
           } finally {
             clearTimeout(deadlineTimer);
             chatFlow.catch(() => {});
+          }
+        }
+
+        case "honcho_remember": {
+          const queries = Array.isArray(args?.queries)
+            ? (args.queries as unknown[]).map(String).map((q) => q.trim()).filter(Boolean)
+            : [];
+          const reasoningLevel = args?.reasoning_level as string;
+
+          if (queries.length === 0) {
+            return {
+              content: [{ type: "text", text: "honcho_remember requires a non-empty `queries` array." }],
+              isError: true,
+            };
+          }
+          if (queries.length > REMEMBER_MAX_QUERIES) {
+            return {
+              content: [{ type: "text", text: `honcho_remember accepts at most ${REMEMBER_MAX_QUERIES} queries (got ${queries.length}).` }],
+              isError: true,
+            };
+          }
+          if (!(REMEMBER_REASONING_LEVELS as readonly string[]).includes(reasoningLevel)) {
+            return {
+              content: [{ type: "text", text: `reasoning_level must be one of: ${REMEMBER_REASONING_LEVELS.join(", ")}` }],
+              isError: true,
+            };
+          }
+
+          // One dialectic peer, one deadline spanning the whole fan-out — mirrors
+          // the `chat` case so a batch can't stack past the harness's turn budget.
+          let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+          const deadline = new Promise<never>((_, reject) => {
+            deadlineTimer = setTimeout(
+              () => reject(new Error(`honcho_remember exceeded ${DIALECTIC_TIMEOUT_MS}ms`)),
+              DIALECTIC_TIMEOUT_MS
+            );
+          });
+
+          const batchStart = Date.now();
+          // allSettled: one failed dialectic degrades to a labeled miss rather
+          // than sinking the whole batch.
+          const fanOut = (async () => {
+            const dialecticPeer = await honchoDialectic.peer(activePeer.id);
+            return Promise.allSettled(
+              queries.map(async (q) => {
+                const qStart = Date.now();
+                const answer = await dialecticPeer.chat(q, {
+                  ...(chatTarget ? { target: chatTarget } : {}),
+                  session,
+                  reasoningLevel,
+                });
+                return { answer, ms: Date.now() - qStart };
+              })
+            );
+          })();
+
+          try {
+            const settled = await Promise.race([fanOut, deadline]);
+            const totalMs = Date.now() - batchStart;
+            const secs = (ms: number) => `${(ms / 1000).toFixed(1)}s`;
+
+            const hits = settled.filter(
+              (r) => r.status === "fulfilled" && r.value.answer
+            ).length;
+
+            const header =
+              `recalled ${hits} insight${hits === 1 ? "" : "s"} · ` +
+              `${queries.length} dialectic${queries.length === 1 ? "" : "s"} @ ${reasoningLevel} · ${secs(totalMs)}`;
+
+            const blocks = settled.map((r, i) => {
+              const label = `q${i + 1} "${queries[i]}"`;
+              if (r.status === "rejected") {
+                const msg = r.reason instanceof Error ? r.reason.message : String(r.reason);
+                return `${label} — failed\n→ (error: ${msg})`;
+              }
+              const { answer, ms } = r.value;
+              const body = answer && answer.trim() ? answer.trim() : "(no memory found)";
+              return `${label} — ${secs(ms)}\n→ ${body}`;
+            });
+
+            return {
+              content: [{ type: "text", text: `${header}\n\n${blocks.join("\n\n")}` }],
+            };
+          } finally {
+            clearTimeout(deadlineTimer);
+            fanOut.catch(() => {});
           }
         }
 

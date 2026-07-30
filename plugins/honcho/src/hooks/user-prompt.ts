@@ -1,7 +1,7 @@
 import { Honcho } from "@honcho-ai/sdk";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { loadConfig, getSessionName, getHonchoClientOptions, isPluginEnabled, getCachedStdin, getObservationMode, getInjectionConfig, type InjectionConfig } from "../config.js";
+import { loadConfig, getSessionName, getHonchoClientOptions, isPluginEnabled, getCachedStdin, getObservationMode, getInjectionConfig, type InjectionConfig, type PerTurnComponent } from "../config.js";
 import {
   getMessageCount,
   incrementMessageCount,
@@ -11,6 +11,7 @@ import { logHook, logApiCall, setLogContext } from "../log.js";
 import {
   visInjectionMessage,
   visDialecticMessage,
+  visSessionContextMessage,
   visSkipMessage,
   visErrorLine,
   visStatusLine,
@@ -213,18 +214,21 @@ export async function handleUserPrompt(): Promise<void> {
         ? formatSessionLink(honchoSessionUrl(config.workspace, sessionName))
         : undefined;
 
-  // Skip trivial prompts — no context needed for "y", "ok", etc.
-  if (shouldSkipContextRetrieval(prompt)) {
-    logHook("user-prompt", "Skipping context (trivial prompt)");
-    visSkipMessage("user-prompt", sessionLink ? `${sessionLink} · trivial prompt` : "trivial prompt");
+  // Skip trivial prompts — no context needed for "y", "ok", etc. Harness-injected
+  // turns are excluded from storage; don't use them as retrieval queries either.
+  if (isHarnessInjected(prompt) || shouldSkipContextRetrieval(prompt)) {
+    logHook("user-prompt", "Skipping context (harness-injected or trivial prompt)");
+    visSkipMessage("user-prompt", sessionLink ? `${sessionLink} · skipped` : "skipped");
     process.exit(0);
   }
 
   const injection = getInjectionConfig(config);
-  const wantContext = injection.perTurn.includes("context");
+  const wantUserContext = injection.perTurn.includes("userContext");
+  const wantAssistantContext = injection.perTurn.includes("assistantContext");
+  const wantSessionContext = injection.perTurn.includes("sessionContext");
   const wantDialectic = injection.perTurn.includes("dialectic");
 
-  if (!wantContext && !wantDialectic) {
+  if (!wantUserContext && !wantAssistantContext && !wantSessionContext && !wantDialectic) {
     logHook("user-prompt", "No per-turn injection components selected");
     visSkipMessage("user-prompt", sessionLink ? `${sessionLink} · injection off` : "injection off");
     process.exit(0);
@@ -232,26 +236,35 @@ export async function handleUserPrompt(): Promise<void> {
 
   setMemoryState("recalling", undefined, hookInput.session_id);
 
-  // Both components run concurrently on independent budgets: context on the tight
-  // 4s race, dialectic on its own ~25s budget. Neither blocks the other, and the
-  // hook completes as soon as the slowest selected component resolves or times out.
+  // All components run concurrently on independent budgets: the three context
+  // fetches each on the tight 4s race, dialectic on its own ~120s budget. None
+  // blocks another, and the hook completes as soon as the slowest selected
+  // component resolves or times out. `turnStart` is only read by the verbose
+  // diagnostics block, but the clock has to start before the race either way.
   const turnStart = Date.now();
-  const [ctxResult, dialecticResult] = await Promise.all([
-    wantContext ? raceTimeout(fetchFreshContext(config, prompt, injection), FETCH_TIMEOUT_MS) : Promise.resolve(null),
+  const [userCtxResult, assistantCtxResult, sessionCtx, dialecticResult] = await Promise.all([
+    wantUserContext ? raceTimeout(fetchUserContext(config, prompt, injection), FETCH_TIMEOUT_MS) : Promise.resolve(null),
+    wantAssistantContext ? raceTimeout(fetchAssistantContext(config, prompt, injection), FETCH_TIMEOUT_MS) : Promise.resolve(null),
+    wantSessionContext ? raceTimeout(fetchSessionContext(config, sessionName, injection), FETCH_TIMEOUT_MS) : Promise.resolve(null),
     wantDialectic ? raceTimeout(fetchDialectic(config, prompt, injection), DIALECTIC_TIMEOUT_MS) : Promise.resolve(null),
   ]);
   const elapsedMs = Date.now() - turnStart;
 
-  const ctx: { context: any; matched?: string[]; queryLabel?: string } | null =
-    ctxResult?.context
-      ? { context: ctxResult.context, matched: ctxResult.matched, queryLabel: ctxResult.queryLabel }
+  const userCtx: { context: any; matched?: string[]; queryLabel?: string } | null =
+    userCtxResult?.context
+      ? { context: userCtxResult.context, matched: userCtxResult.matched, queryLabel: userCtxResult.queryLabel }
       : null;
   const dialectic = dialecticResult?.result ?? null;
+
+  const assistantCtx = assistantCtxResult?.context ?? null;
 
   // Failures the plugin used to swallow into the log file only. visErrorLine
   // returns "" at "off" and a formatted line at every other level, so these
   // reach the user even when routine chatter is suppressed at "error".
-  const errorLines = [ctxResult?.error, dialecticResult?.error]
+  // Only userContext and dialectic report an error upward; fetchAssistantContext
+  // and fetchSessionContext still resolve to null on failure (upstream behavior,
+  // unchanged by this merge) so their failures remain log-only for now.
+  const errorLines = [userCtxResult?.error, dialecticResult?.error]
     .filter((e): e is string => !!e)
     .map(e => visErrorLine("user-prompt", e));
 
@@ -259,15 +272,20 @@ export async function handleUserPrompt(): Promise<void> {
   // Access service token is attached (boolean only), and this turn's timing.
   // The extras are built lazily — at info/error/off nothing here runs at all,
   // so a quiet terminal really does cost nothing on the per-turn hot path.
+  // Counts are summed across upstream's split components rather than the single
+  // pre-merge `ctx`, so the readout matches whatever is actually selected.
   const diagnostics = getCurrentOutputLevel() === "verbose"
     ? visDiagnostics(config, {
         "retrieval": `${(elapsedMs / 1000).toFixed(1)}s`,
         "components": injection.perTurn.join(", ") || "none",
-        "conclusions": ctx ? extractConclusions(ctx.context).length : 0,
+        "conclusions":
+          (userCtx ? extractConclusions(userCtx.context).length : 0) +
+          (assistantCtx ? extractConclusions(assistantCtx).length : 0),
+        "session messages": sessionCtx?.lines.length ?? 0,
       }, cwd)
     : "";
 
-  emitPerTurn(config.peerName, ctx, dialectic, {
+  emitPerTurn(config, injection, userCtx, assistantCtx, sessionCtx, dialectic, {
     sessionLink,
     extraLines: [...errorLines, diagnostics],
   });
@@ -275,35 +293,58 @@ export async function handleUserPrompt(): Promise<void> {
 }
 
 /**
- * Emit the per-turn injection: the selected components ("context" and/or
- * "dialectic") composed into one additionalContext payload plus a per-component
- * systemMessage summary. Exits silently when nothing resolved to content —
- * mirroring the old no-cache fall-through.
+ * Emit the per-turn injection: the selected components composed into one
+ * additionalContext payload plus a per-component systemMessage summary. Every
+ * component reports a one-line summary; only those listed in
+ * `injection.showContents` also print their payload to the terminal. Exits
+ * silently when nothing resolved to content — mirroring the old no-cache
+ * fall-through.
  */
 export function emitPerTurn(
-  peerName: string,
-  ctx: { context: any; matched?: string[]; queryLabel?: string } | null,
+  config: any,
+  injection: InjectionConfig,
+  userCtx: { context: any; matched?: string[]; queryLabel?: string } | null,
+  assistantCtx: any | null,
+  sessionCtx: SessionContextResult | null,
   dialectic: DialecticResult | null,
+  // Ours, layered on top of upstream's signature: upstream passed a bare
+  // `sessionLink?: string` here. It becomes one field of an optional trailing
+  // `opts` bag so the error lines and the verbose diagnostics block can ride
+  // along without reordering any of upstream's existing parameters.
   opts: { sessionLink?: string; extraLines?: string[] } = {},
 ): void {
   const parts: string[] = [];
   const visLines: string[] = [];
+  const show = (c: PerTurnComponent) => injection.showContents?.includes(c) ?? false;
 
-  if (ctx) {
-    const conclusions = extractConclusions(ctx.context);
+  if (userCtx) {
+    const conclusions = extractConclusions(userCtx.context);
     if (conclusions.length > 0) {
       // `parts` feeds additionalContext; `visLines` feeds the terminal. They are
       // built from the same data but are INDEPENDENT — no outputLevel check
       // touches `parts`, which is what makes additionalContext byte-identical
       // from "verbose" all the way down to "off".
       parts.push(`Relevant conclusions: ${conclusions.join("; ")}`);
-      visLines.push(visInjectionMessage("user-prompt", { conclusions, matched: ctx.matched, queryLabel: ctx.queryLabel }));
+      visLines.push(visInjectionMessage("user-prompt", { conclusions, matched: userCtx.matched, queryLabel: userCtx.queryLabel, showContents: show("userContext") }));
     }
+  }
+
+  if (assistantCtx) {
+    const conclusions = extractConclusions(assistantCtx);
+    if (conclusions.length > 0) {
+      parts.push(`Conclusions about the assistant (${config.aiPeer}): ${conclusions.join("; ")}`);
+      visLines.push(visInjectionMessage("user-prompt", { conclusions, queryLabel: `assistant ${config.aiPeer}`, showContents: show("assistantContext") }));
+    }
+  }
+
+  if (sessionCtx) {
+    parts.push(`Recent Honcho session messages:\n${sessionCtx.lines.join("\n")}`);
+    visLines.push(visSessionContextMessage("user-prompt", sessionCtx.lines, sessionCtx.tokenCount, show("sessionContext")));
   }
 
   if (dialectic) {
     parts.push(`Dialectic recall: ${dialectic.answer}`);
-    visLines.push(visDialecticMessage("user-prompt", dialectic.reasoning, dialectic.elapsedMs, dialectic.answer));
+    visLines.push(visDialecticMessage("user-prompt", dialectic.reasoning, dialectic.elapsedMs, dialectic.answer, show("dialectic")));
   }
 
   // The session link is a status banner, not a failure — it drops at "error"/"off"
@@ -322,7 +363,7 @@ export function emitPerTurn(
     return;
   }
 
-  outputContext(peerName, parts, visMsg);
+  outputContext(config.peerName, parts, visMsg);
 }
 
 interface DialecticResult {
@@ -368,7 +409,13 @@ async function fetchDialectic(config: any, prompt: string, injection: InjectionC
   }
 }
 
-async function fetchFreshContext(config: any, prompt: string, injection: InjectionConfig): Promise<{ context: any; matched: string[]; queryLabel?: string; error?: string }> {
+/**
+ * Per-turn "userContext" component: a prompt-scoped peer.context() fetch for
+ * the user peer, observation-mode aware. `error` is ours: a failure here is
+ * reported upward so the caller can surface it at the "error" output level
+ * instead of it only ever landing in the log file.
+ */
+async function fetchUserContext(config: any, prompt: string, injection: InjectionConfig): Promise<{ context: any; matched: string[]; queryLabel?: string; error?: string }> {
   const honcho = new Honcho(getHonchoClientOptions(config));
   const observationMode = getObservationMode(config);
 
@@ -422,6 +469,76 @@ async function fetchFreshContext(config: any, prompt: string, injection: Injecti
   }
 
   return { context: contextResult, matched, queryLabel: usePrompt ? "prompt" : undefined, error: fetchError };
+}
+
+/**
+ * Per-turn "assistantContext" component: the same prompt-scoped peer.context()
+ * fetch, but for the AI peer's own representation — what Honcho has derived
+ * about the assistant. Always the peer's global (self) view, regardless of
+ * observation mode: there is no directional "assistant observed by user"
+ * collection to fall back to.
+ */
+async function fetchAssistantContext(config: any, prompt: string, injection: InjectionConfig): Promise<{ context: any } | null> {
+  const honcho = new Honcho(getHonchoClientOptions(config));
+  const aiPeer = await honcho.peer(config.aiPeer);
+
+  const usePrompt = injection.searchQuerySource === "prompt";
+  const { topics } = usePrompt ? { topics: [] } : extractTopics(prompt);
+  const searchQuery = usePrompt || topics.length === 0 ? prompt : topics.join(" ");
+
+  const startTime = Date.now();
+  try {
+    const context = await aiPeer.context({
+      searchQuery,
+      searchTopK: injection.searchTopK,
+      searchMaxDistance: injection.searchMaxDistance,
+      maxConclusions: injection.maxConclusions,
+      includeMostFrequent: false,
+    });
+    logApiCall("aiPeer.context (assistant)", "GET", `search: ${searchQuery.slice(0, 60)}`, Date.now() - startTime, true);
+    verboseApiResult("aiPeer.context() -> representation (assistant)", (context as any)?.representation);
+    return { context };
+  } catch (e) {
+    logHook("user-prompt", `Assistant context fetch failed: ${e}`);
+    return null;
+  }
+}
+
+interface SessionContextResult {
+  /** "peer: content" lines, oldest first. */
+  lines: string[];
+  tokenCount: number;
+}
+
+/**
+ * Per-turn "sessionContext" component: recent raw messages from the currently
+ * mapped Honcho session, within a token budget. Summary is off — it's the same
+ * stored row the sessionStart "summary" component injects — and no peer target
+ * or search query is passed, keeping this a plain message-window fetch rather
+ * than another semantic retrieval. The value is turns from other instances
+ * sharing the session name (per-directory strategy). Returns null when the
+ * session has no messages.
+ */
+async function fetchSessionContext(config: any, sessionName: string, injection: InjectionConfig): Promise<SessionContextResult | null> {
+  const honcho = new Honcho(getHonchoClientOptions(config));
+  const startTime = Date.now();
+  try {
+    const session = await honcho.session(sessionName);
+    const context = await session.context({
+      summary: false,
+      tokens: injection.sessionContextTokens ?? 1500,
+    });
+    logApiCall("session.context", "GET", sessionName, Date.now() - startTime, true);
+    const messages = context?.messages ?? [];
+    if (!messages.length) return null;
+    const lines = messages.map((m: any) => `${m.peerId}: ${m.content}`);
+    const tokenCount = messages.reduce((sum: number, m: any) => sum + (m.tokenCount ?? 0), 0);
+    verboseApiResult("session.context() -> messages", lines.join("\n"));
+    return { lines, tokenCount };
+  } catch (e) {
+    logHook("user-prompt", `Session context fetch failed: ${e}`);
+    return null;
+  }
 }
 
 // Per-turn context injects representation-derived conclusions ONLY. The full
