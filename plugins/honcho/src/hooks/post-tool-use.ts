@@ -80,7 +80,7 @@ function inferContentPurpose(content: string, filePath: string): string {
 /**
  * Summarize what changed in an edit (not just the raw strings)
  */
-function summarizeEdit(oldStr: string, newStr: string, filePath: string): string {
+export function summarizeEdit(oldStr: string, newStr: string, filePath: string): string {
   const oldLines = oldStr.split('\n').length;
   const newLines = newStr.split('\n').length;
 
@@ -100,9 +100,21 @@ function summarizeEdit(oldStr: string, newStr: string, filePath: string): string
   const oldTokens: string[] = oldStr.match(/\w+/g) ?? [];
   const newTokens: string[] = newStr.match(/\w+/g) ?? [];
 
-  // Find added/removed identifiers
-  const added = newTokens.filter(t => !oldTokens.includes(t) && t.length > 2);
-  const removed = oldTokens.filter(t => !newTokens.includes(t) && t.length > 2);
+  // Find added/removed identifiers.
+  //
+  // Set membership, not Array.includes. `newTokens.filter(t => !oldTokens.includes(t))`
+  // is O(n·m) — a linear scan per token, done twice — which on a real 682 KB Edit
+  // payload cost 12.6s, and never finished at all on a 100k-token edit. Measured:
+  // 11.4s at 20k tokens/side and 40.1s at 40k, versus ~5ms and ~126ms here.
+  // Output is byte-identical; this is purely the lookup structure.
+  //
+  // The cheap `t.length > 2` guard runs FIRST so short tokens skip the hash
+  // lookup entirely — with `includes` the scan ran even for tokens that were
+  // about to be discarded.
+  const oldSet = new Set(oldTokens);
+  const newSet = new Set(newTokens);
+  const added = newTokens.filter(t => t.length > 2 && !oldSet.has(t));
+  const removed = oldTokens.filter(t => t.length > 2 && !newSet.has(t));
 
   if (added.length > 0 && removed.length > 0) {
     return `changed: ${removed.slice(0, 2).join(', ')} → ${added.slice(0, 2).join(', ')}`;
