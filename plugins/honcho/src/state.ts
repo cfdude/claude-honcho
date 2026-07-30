@@ -6,7 +6,7 @@
  */
 
 import { join } from "path";
-import { writeFileSync, unlinkSync } from "fs";
+import { writeFileSync, unlinkSync, readFileSync } from "fs";
 import { honchoDir } from "./home.js";
 
 // Per-window files keyed by Claude Code's session_id (the one field guaranteed
@@ -21,6 +21,19 @@ function stateFile(sessionId?: string): string {
 }
 function sessionFile(sessionId?: string): string {
   return join(honchoDir(), sessionId ? `session-${sessionId}.json` : "session.json");
+}
+/**
+ * Upstream #39 — the per-session ledger of conclusions already injected, so
+ * UserPromptSubmit stops re-injecting the same ones verbatim every turn.
+ *
+ * It is a SIBLING of state-*.json rather than a field inside it: setMemoryState()
+ * rewrites state-${sessionId}.json wholesale on every phase change (several times
+ * per turn), so a ledger co-located there would be clobbered constantly. Same
+ * directory, same session_id keying, same lazy honchoDir() resolution, and
+ * clearSessionFiles() cleans it up with the rest.
+ */
+function dedupFile(sessionId?: string): string {
+  return join(honchoDir(), sessionId ? `dedup-${sessionId}.json` : "dedup.json");
 }
 
 export type MemoryPhase =
@@ -48,10 +61,57 @@ export function setSessionLink(url: string, name: string | undefined, sessionId?
   }
 }
 
+/**
+ * Which conclusions this session has already injected, and when.
+ *
+ * `turn` is the count of injecting UserPromptSubmit turns so far (trivial and
+ * harness-injected prompts exit before reaching this, so they don't advance it).
+ * `seen` maps a short content hash to the turn it was LAST actually injected on
+ * — suppressed repeats deliberately do not refresh their stamp, so a conclusion
+ * becomes eligible again a fixed window after its last real injection rather
+ * than being buried forever.
+ *
+ * Only hashes are stored, never conclusion text: the ledger stays tiny and no
+ * memory content is duplicated into a second file on disk.
+ */
+export interface DedupLedger {
+  turn: number;
+  seen: Record<string, number>;
+}
+
+/** Entries older than this many turns are dropped on save, bounding file size. */
+const DEDUP_LEDGER_RETAIN_TURNS = 50;
+
+export function loadDedupLedger(sessionId?: string): DedupLedger {
+  try {
+    const raw = JSON.parse(readFileSync(dedupFile(sessionId), "utf-8"));
+    const turn = typeof raw?.turn === "number" && raw.turn >= 0 ? raw.turn : 0;
+    const seen = raw?.seen && typeof raw.seen === "object" ? raw.seen : {};
+    return { turn, seen };
+  } catch {
+    // Missing or corrupt: start clean. A lost ledger only costs one turn of
+    // repeats — never memory content.
+    return { turn: 0, seen: {} };
+  }
+}
+
+export function saveDedupLedger(ledger: DedupLedger, sessionId?: string): void {
+  try {
+    const cutoff = ledger.turn - DEDUP_LEDGER_RETAIN_TURNS;
+    const seen: Record<string, number> = {};
+    for (const [key, turn] of Object.entries(ledger.seen)) {
+      if (turn > cutoff) seen[key] = turn;
+    }
+    writeFileSync(dedupFile(sessionId), JSON.stringify({ turn: ledger.turn, seen }));
+  } catch {
+    // best-effort — a failed write just means the next turn may repeat itself
+  }
+}
+
 // Clean up this window's files when its session ends, so they don't accumulate.
 export function clearSessionFiles(sessionId?: string): void {
   if (!sessionId) return;
-  for (const f of [stateFile(sessionId), sessionFile(sessionId)]) {
+  for (const f of [stateFile(sessionId), sessionFile(sessionId), dedupFile(sessionId)]) {
     try { unlinkSync(f); } catch { /* already gone */ }
   }
 }

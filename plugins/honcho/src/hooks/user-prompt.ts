@@ -23,7 +23,7 @@ import {
 } from "../visual.js";
 import type { ReasoningLevel } from "../config.js";
 import { honchoSessionUrl } from "../styles.js";
-import { setMemoryState, setSessionLink } from "../state.js";
+import { setMemoryState, setSessionLink, loadDedupLedger, saveDedupLedger, type DedupLedger } from "../state.js";
 
 interface HookInput {
   prompt?: string;
@@ -118,6 +118,85 @@ function extractTopics(prompt: string): { topics: string[]; precise: boolean } {
   const stopwords = new Set(['the', 'and', 'for', 'that', 'this', 'with', 'from', 'have', 'are', 'was', 'were', 'been', 'being', 'has', 'had', 'does', 'did', 'will', 'would', 'could', 'should', 'can', 'may', 'might', 'must', 'shall', 'need', 'want', 'like', 'just', 'also', 'more', 'some', 'what', 'when', 'where', 'which', 'who', 'how', 'why', 'all', 'each', 'every', 'both', 'few', 'most', 'other', 'into', 'over', 'such', 'only', 'same', 'than', 'very', 'your', 'make', 'take', 'come', 'give', 'look', 'think', 'know']);
   const words = prompt.toLowerCase().match(/\b[a-z]{4,}\b/g) || [];
   return { topics: [...new Set(words.filter(w => !stopwords.has(w)))].slice(0, 10), precise: false };
+}
+
+// ============================================
+// Per-session conclusion dedup (upstream #39)
+// ============================================
+
+/**
+ * How many turns a conclusion stays suppressed after being injected.
+ *
+ * Not "forever": a conclusion that mattered 20 turns ago can legitimately matter
+ * again once the conversation has moved on, and by then it is very likely to have
+ * dropped out of the live context window (or been summarized away by a compact),
+ * so re-injecting is real information rather than noise. Not a raw count-cap
+ * either — a count would suppress by arrival order regardless of how long ago the
+ * repeat was seen. 8 turns is short enough that genuine re-relevance recovers
+ * quickly and long enough to kill the every-single-turn repetition #39 reports.
+ */
+export const DEDUP_WINDOW_TURNS = 8;
+
+/**
+ * The floor: if dedup would leave NOTHING, inject this many of the original
+ * conclusions anyway. Degrading memory to nothing is strictly worse than
+ * repeating yourself, so dedup is only ever allowed to thin the payload.
+ */
+export const DEDUP_FLOOR = 3;
+
+/**
+ * Short, stable content hash (FNV-1a, 32-bit, hex). Dependency-free and
+ * deterministic across runs so the ledger survives restarts. Whitespace is
+ * collapsed and case folded first, so cosmetic re-rendering of the same
+ * conclusion still counts as a repeat.
+ *
+ * `namespace` keeps the user-peer and assistant-peer views separate: the same
+ * sentence about each is two different facts.
+ */
+export function dedupKey(conclusion: string, namespace: string): string {
+  const normalized = conclusion.trim().toLowerCase().replace(/\s+/g, " ");
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < normalized.length; i++) {
+    hash ^= normalized.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return `${namespace}:${hash.toString(16)}`;
+}
+
+/**
+ * Drop conclusions injected within the last DEDUP_WINDOW_TURNS turns, then
+ * RECORD what survived against the current turn.
+ *
+ * Guarantees:
+ *  - Never returns an empty list for a non-empty input (the DEDUP_FLOOR floor).
+ *  - Only the emitted conclusions get their stamp refreshed, so a suppressed one
+ *    ages out on schedule from its last real injection.
+ *  - Purely a function of (conclusions, ledger). It never reads outputLevel, so
+ *    additionalContext stays byte-identical across every display level.
+ */
+export function filterRepeats(
+  conclusions: string[],
+  ledger: DedupLedger,
+  namespace: string,
+): { kept: string[]; suppressed: number; floored: boolean } {
+  if (conclusions.length === 0) return { kept: [], suppressed: 0, floored: false };
+
+  const fresh = conclusions.filter((c) => {
+    const lastTurn = ledger.seen[dedupKey(c, namespace)];
+    return lastTurn === undefined || ledger.turn - lastTurn > DEDUP_WINDOW_TURNS;
+  });
+
+  const floored = fresh.length === 0;
+  // The floor: everything was a repeat, but an empty injection would hand the
+  // model no memory at all. Re-send the top-N in retrieval order (already
+  // relevance-ranked by context()) rather than nothing.
+  const kept = floored ? conclusions.slice(0, DEDUP_FLOOR) : fresh;
+
+  for (const c of kept) {
+    ledger.seen[dedupKey(c, namespace)] = ledger.turn;
+  }
+
+  return { kept, suppressed: conclusions.length - kept.length, floored };
 }
 
 function shouldSkipContextRetrieval(prompt: string): boolean {
@@ -285,10 +364,20 @@ export async function handleUserPrompt(): Promise<void> {
       }, cwd)
     : "";
 
+  // #39: load the per-session dedup ledger, advance the turn counter, let
+  // emitPerTurn thin repeats out of the payload, then PERSIST before exiting.
+  // The save has to sit between emit and process.exit — process.exit is
+  // immediate, so anything deferred past it never lands.
+  const ledger = loadDedupLedger(hookInput.session_id);
+  ledger.turn += 1;
+
   emitPerTurn(config, injection, userCtx, assistantCtx, sessionCtx, dialectic, {
     sessionLink,
     extraLines: [...errorLines, diagnostics],
+    dedup: ledger,
   });
+
+  saveDedupLedger(ledger, hookInput.session_id);
   process.exit(0);
 }
 
@@ -311,14 +400,23 @@ export function emitPerTurn(
   // `sessionLink?: string` here. It becomes one field of an optional trailing
   // `opts` bag so the error lines and the verbose diagnostics block can ride
   // along without reordering any of upstream's existing parameters.
-  opts: { sessionLink?: string; extraLines?: string[] } = {},
+  // `dedup` (ours, #39) is the per-session ledger. When absent, behavior is
+  // exactly as before — every retrieved conclusion is injected. When present,
+  // repeats from the last DEDUP_WINDOW_TURNS turns are thinned out and the
+  // ledger is MUTATED with what was actually emitted; the caller persists it.
+  opts: { sessionLink?: string; extraLines?: string[]; dedup?: DedupLedger } = {},
 ): void {
   const parts: string[] = [];
   const visLines: string[] = [];
   const show = (c: PerTurnComponent) => injection.showContents?.includes(c) ?? false;
+  // Dedup runs on the conclusion lists only — never on sessionContext (a raw
+  // message window, meaningless partially elided) or dialectic (a freshly
+  // generated answer, not a stored conclusion).
+  const dedup = (conclusions: string[], namespace: string): string[] =>
+    opts.dedup ? filterRepeats(conclusions, opts.dedup, namespace).kept : conclusions;
 
   if (userCtx) {
-    const conclusions = extractConclusions(userCtx.context);
+    const conclusions = dedup(extractConclusions(userCtx.context), "u");
     if (conclusions.length > 0) {
       // `parts` feeds additionalContext; `visLines` feeds the terminal. They are
       // built from the same data but are INDEPENDENT — no outputLevel check
@@ -330,7 +428,7 @@ export function emitPerTurn(
   }
 
   if (assistantCtx) {
-    const conclusions = extractConclusions(assistantCtx);
+    const conclusions = dedup(extractConclusions(assistantCtx), "a");
     if (conclusions.length > 0) {
       parts.push(`Conclusions about the assistant (${config.aiPeer}): ${conclusions.join("; ")}`);
       visLines.push(visInjectionMessage("user-prompt", { conclusions, queryLabel: `assistant ${config.aiPeer}`, showContents: show("assistantContext") }));
