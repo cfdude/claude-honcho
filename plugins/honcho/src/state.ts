@@ -82,11 +82,27 @@ export interface DedupLedger {
 /** Entries older than this many turns are dropped on save, bounding file size. */
 const DEDUP_LEDGER_RETAIN_TURNS = 50;
 
+/**
+ * A ledger's `seen` map must be a plain object of finite numeric turn stamps.
+ * Arrays and non-numeric values are treated as corruption and discarded.
+ */
+function isValidSeenMap(seen: unknown): seen is Record<string, number> {
+  if (!seen || typeof seen !== "object" || Array.isArray(seen)) return false;
+  return Object.values(seen as Record<string, unknown>).every(
+    (v) => typeof v === "number" && Number.isFinite(v),
+  );
+}
+
 export function loadDedupLedger(sessionId?: string): DedupLedger {
   try {
     const raw = JSON.parse(readFileSync(dedupFile(sessionId), "utf-8"));
     const turn = typeof raw?.turn === "number" && raw.turn >= 0 ? raw.turn : 0;
-    const seen = raw?.seen && typeof raw.seen === "object" ? raw.seen : {};
+    // `typeof x === "object"` alone admits arrays and non-numeric stamps. A
+    // stamp that will not coerce to a number makes `ledger.turn - lastTurn`
+    // NaN, and `NaN > DEDUP_WINDOW_TURNS` is false — so that conclusion reads
+    // as a permanent repeat, and only *kept* entries get restamped, so it never
+    // heals for the life of the session.
+    const seen = isValidSeenMap(raw?.seen) ? raw.seen : {};
     return { turn, seen };
   } catch {
     // Missing or corrupt: start clean. A lost ledger only costs one turn of

@@ -305,3 +305,40 @@ test("clearSessionFiles removes the ledger with the rest of the session state", 
   clearSessionFiles("sess-3");
   expect(existsSync(join(fakeHome, ".honcho", "dedup-sess-3.json"))).toBe(false);
 });
+
+// ============================================
+// Ledger validation (upstream PR #104 review)
+// ============================================
+
+/**
+ * `typeof x === "object"` alone admits arrays and non-numeric stamps.
+ * filterRepeats computes `ledger.turn - lastTurn`; a value that will not coerce
+ * yields NaN, and `NaN > DEDUP_WINDOW_TURNS` is false — so the conclusion reads
+ * as a repeat. Only KEPT entries are restamped, so a poisoned entry never heals
+ * for the life of the session. loadDedupLedger therefore rejects the whole map.
+ */
+test("a seen map with a non-numeric stamp is discarded, not trusted", () => {
+  writeFileSync(
+    join(fakeHome, ".honcho", "dedup-sess-corrupt.json"),
+    JSON.stringify({ turn: 5, seen: { "u:x": "abc" } }),
+  );
+  const loaded = loadDedupLedger("sess-corrupt");
+  expect(loaded.seen).toEqual({});
+  expect(loaded.turn).toBe(5);
+});
+
+test("a seen map that is an array is discarded", () => {
+  writeFileSync(
+    join(fakeHome, ".honcho", "dedup-sess-array.json"),
+    JSON.stringify({ turn: 3, seen: [1, 2, 3] }),
+  );
+  expect(loadDedupLedger("sess-array").seen).toEqual({});
+});
+
+test("a valid numeric seen map still round-trips", () => {
+  writeFileSync(
+    join(fakeHome, ".honcho", "dedup-sess-good.json"),
+    JSON.stringify({ turn: 4, seen: { "u:x": 2 } }),
+  );
+  expect(loadDedupLedger("sess-good").seen).toEqual({ "u:x": 2 });
+});
