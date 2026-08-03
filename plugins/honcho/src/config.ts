@@ -569,6 +569,12 @@ export function resolveConfig(
   let workspace: string;
   let aiPeer: string;
 
+  // HONCHO_WORKSPACE is honored as the highest-priority, per-invocation runtime
+  // override in every branch. This lets a single directory/session target a
+  // specific workspace -- e.g. set per-project via Claude Code's
+  // .claude/settings.local.json `env`, or per-shell via `export` -- without
+  // changing the persisted default for other directories. saveConfig() does not
+  // materialize this override to disk (see workspaceForSave there).
   if (raw.globalOverride === true) {
     // Global override: flat fields apply to ALL hosts
     workspace = envWorkspace ?? projectWorkspace ?? raw.workspace ?? DEFAULT_WORKSPACE[host];
