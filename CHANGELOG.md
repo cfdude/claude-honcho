@@ -4,6 +4,32 @@ All notable changes to claude-honcho will be documented in this file.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-08-03
+
+### Fixed
+
+- **Private-key material could survive redaction in a PEM bundle.** The
+  unterminated-key fallback's lookahead tested for a bare `-----END`, while the
+  primary pass requires `-----END ... PRIVATE KEY-----`. So a private key
+  followed by `-----END CERTIFICATE-----` — the ordinary bundle layout — was
+  skipped by *both* passes and the key material was captured verbatim. Confirmed
+  against the real `redactSecrets()` before and after the fix.
+- The per-session dedup ledger was keyed on the hook's optional `session_id`
+  rather than the `instanceId` the rest of the hook already falls back to. With
+  no `session_id` the ledger collapsed to one shared global `dedup.json`, so
+  concurrent sessions shared a turn counter and suppressed each other's
+  conclusions — and `clearSessionFiles` never cleaned that file up.
+- `loadDedupLedger` accepted any `seen` whose `typeof` was `"object"`, admitting
+  arrays and non-numeric stamps. A stamp that will not coerce makes
+  `turn - lastTurn` `NaN`, and `NaN > WINDOW` is false, so the entry read as a
+  permanent repeat; since only *emitted* entries are restamped, it never healed
+  for the life of the session.
+
+Each fix carries a regression test verified to fail without it.
+
+> Note: 0.5.0 and 0.6.0 shipped without changelog entries. This entry covers
+> only the 0.6.1 fixes rather than reconstructing them after the fact.
+
 ## [0.4.0] - 2026-07-25
 
 ### Added
