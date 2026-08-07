@@ -4,9 +4,24 @@ All notable changes to claude-honcho will be documented in this file.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-06
+
+Absorbs seven upstream commits by cherry-pick. `81b6f3b` (#92, the self-contained
+npm build) is deliberately **not** taken — see
+`honcho-deploy/docs/plugin-upstream-sync-strategy-2026-08.md`.
+
 ### Added
 
-- `/honcho:insights` skill — runs a max-reasoning dialectic pass over accumulated memory and turns it into proposed CLAUDE.md edits, output-style rules, and skill ideas. Falls back to a parallel `honcho_remember` fan-out at `high` if the max query times out. Read-only until the user picks what to apply.
+- `/honcho:insights` skill — runs a max-reasoning dialectic pass over accumulated memory and turns it into proposed CLAUDE.md edits, output-style rules, and skill ideas. Falls back to a parallel `honcho_remember` fan-out at `high` if the max query times out. Read-only until the user picks what to apply. (upstream #98)
+- `/honcho:briefing` skill — session briefing over accumulated memory. (upstream #102)
+- `query_conclusions` MCP tool — semantic search over saved conclusions returning IDs usable with `delete_conclusion`, far faster than paging `list_conclusions`. The `search` tool now covers conclusions workspace-wide alongside messages. (upstream #113)
+- Linked git worktrees resolve to their main repository's session, so worktree work lands in the parent repo's memory instead of a separate one. (upstream #107)
+
+### Fixed
+
+- **Stop hook re-uploaded assistant narration already sent.** It collected text by walking back to the last real user prompt, but a task-notification/system wakeup is not a real prompt — so a *second* wakeup re-collected the whole accumulated segment. Wakeups are now segment boundaries. Measured across 23 local sessions before the fix: 434 duplicate assistant uploads, 88% of them from one background-agent-heavy session. Duplication requires wakeups to *cluster*; isolated ones were already correct. (upstream #108)
+- Changing `sessionPeerPrefix` no longer **wipes** `sessions` — user-set session overrides are kept, with a warning that only newly created sessions use the new naming. `sessionStrategy` likewise keeps overrides, flagging them inactive outside the per-directory strategy. (upstream #111)
+- `set_config` coerces string booleans, so `"true"`/`"false"` behave as booleans. (upstream `07748b5`)
 
 ## [0.6.1] - 2026-08-03
 
