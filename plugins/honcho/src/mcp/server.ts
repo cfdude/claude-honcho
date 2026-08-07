@@ -10,6 +10,7 @@ import {
   loadConfig,
   saveConfig,
   saveRootField,
+  coerceBoolean,
   getHonchoClientOptions,
   getSessionName,
   getConfigPath,
@@ -456,7 +457,7 @@ export function handleSetConfig(args: Record<string, unknown>) {
 
     case "sessionPeerPrefix":
       previousValue = cfg.sessionPeerPrefix !== false;
-      cfg.sessionPeerPrefix = Boolean(value);
+      cfg.sessionPeerPrefix = coerceBoolean(value);
       // Clear persisted session names — they embed the old prefix
       cfg.sessions = {};
       break;
@@ -464,24 +465,24 @@ export function handleSetConfig(args: Record<string, unknown>) {
 
     case "globalOverride":
       previousValue = cfg.globalOverride ?? false;
-      cfg.globalOverride = Boolean(value);
+      cfg.globalOverride = coerceBoolean(value);
       // globalOverride is a root-level flag — write to root (user-directed)
       saveRootField("globalOverride", cfg.globalOverride);
       break;
 
     case "enabled":
       previousValue = cfg.enabled;
-      cfg.enabled = Boolean(value);
+      cfg.enabled = coerceBoolean(value);
       break;
 
     case "logging":
       previousValue = cfg.logging;
-      cfg.logging = Boolean(value);
+      cfg.logging = coerceBoolean(value);
       break;
 
     case "saveMessages":
       previousValue = cfg.saveMessages;
-      cfg.saveMessages = Boolean(value);
+      cfg.saveMessages = coerceBoolean(value);
       break;
 
     case "messageUpload.maxUserTokens":
@@ -499,7 +500,7 @@ export function handleSetConfig(args: Record<string, unknown>) {
     case "messageUpload.summarizeAssistant":
       previousValue = cfg.messageUpload?.summarizeAssistant;
       if (!cfg.messageUpload) cfg.messageUpload = {};
-      cfg.messageUpload.summarizeAssistant = Boolean(value);
+      cfg.messageUpload.summarizeAssistant = coerceBoolean(value);
       break;
 
     case "contextRefresh.messageThreshold":
@@ -517,7 +518,7 @@ export function handleSetConfig(args: Record<string, unknown>) {
     case "contextRefresh.skipDialectic":
       previousValue = cfg.contextRefresh?.skipDialectic;
       if (!cfg.contextRefresh) cfg.contextRefresh = {};
-      cfg.contextRefresh.skipDialectic = Boolean(value);
+      cfg.contextRefresh.skipDialectic = coerceBoolean(value);
       break;
 
     case "reasoningLevel":
@@ -631,7 +632,7 @@ export function handleSetConfig(args: Record<string, unknown>) {
 
     case "rememberTool":
       previousValue = cfg.rememberTool;
-      cfg.rememberTool = Boolean(value);
+      cfg.rememberTool = coerceBoolean(value);
       break;
 
     case "injection.searchQuerySource":
@@ -959,6 +960,16 @@ export async function runMcpServer(): Promise<void> {
               },
             },
             required: ["id"],
+          },
+        },
+        {
+          name: "get_briefing",
+          description:
+            "Load the session briefing: the stored long summary of this session plus the user's peer card (identity/attribute profile). " +
+            "Call this once at the start of a session when the session-start directives ask for it, or any time you need to catch up on where the session left off.",
+          inputSchema: {
+            type: "object",
+            properties: {},
           },
         },
         {
@@ -1314,6 +1325,34 @@ export async function runMcpServer(): Promise<void> {
                 text: `Saved conclusion: ${conclusions[0]?.content || content}`,
               },
             ],
+          };
+        }
+
+        case "get_briefing": {
+          // Fetches at sessionStart "summary"/"peerCard" components
+          const [summariesResult, ctxResult] = await Promise.allSettled([
+            session.summaries(),
+            activePeer.context({
+              ...(contextTarget ? { target: contextTarget } : {}),
+              maxConclusions: 25,
+              includeMostFrequent: true,
+            }),
+          ]);
+
+          const summary = summariesResult.status === "fulfilled"
+            ? (summariesResult.value as any)?.longSummary?.content?.trim()
+            : null;
+          const card: string[] = ctxResult.status === "fulfilled"
+            ? ((ctxResult.value as any)?.peerCard ?? []).filter((item: string) => item?.trim())
+            : [];
+
+          const parts: string[] = [];
+          if (summary) parts.push(`## Session summary\n${summary}`);
+          if (card.length) parts.push(`## Peer card (${card.length} items)\n${card.map((item) => `- ${item}`).join("\n")}`);
+          if (parts.length === 0) parts.push("No briefing available yet — no stored session summary or peer card.");
+
+          return {
+            content: [{ type: "text", text: parts.join("\n\n") }],
           };
         }
 
