@@ -1,5 +1,9 @@
+# Dependencies
+node_modules/
+
 # Build output
 /dist/
+.stage/
 
 
 # Bun
@@ -59,3 +63,6 @@ temp/
 package-lock.json
 yarn.lock
 pnpm-lock.yaml
+
+# Build stage produced by plugins/honcho/scripts/build.ts
+plugins/honcho/.stage/

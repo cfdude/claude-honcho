@@ -96,6 +96,14 @@ const VALUE_SHAPES: RegExp[] = [
   /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g,
   // JWT: three dot-separated base64url segments (signature may be empty).
   /\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]*/g,
+  // Honcho's OWN API keys. The most important shape in this list for this
+  // plugin specifically: ~/.honcho/config.json holds one, so a command echoing
+  // config is the likeliest way a real key reaches a tool summary. (upstream #112)
+  /\bhch[_-]?[A-Za-z0-9_-]{16,}\b/g,
+  // GitLab personal access token. (upstream #112)
+  /\bglpat-[A-Za-z0-9_-]{20,}\b/g,
+  // npm automation/publish token. (upstream #112)
+  /\bnpm_[A-Za-z0-9]{36}\b/g,
 ];
 
 /** `-----BEGIN ... PRIVATE KEY-----` blocks, terminated or not. */
@@ -221,7 +229,31 @@ function redactToolSpecificFlags(input: string): string {
  * Redact secret-bearing values from a string that is about to be shown to the
  * user or persisted as memory. Call this BEFORE truncating.
  */
-export function redactSecrets(input: string): string {
+/**
+ * Validate a user-supplied pattern string. Returns an error message, or null if
+ * it compiles. Used by set_config so a bad regex is rejected at write time
+ * rather than silently skipped at redaction time. (upstream #112)
+ */
+export function validateRedactPattern(source: string): string | null {
+  try {
+    new RegExp(source);
+    return null;
+  } catch (e) {
+    return `Invalid regex ${JSON.stringify(source)}: ${e instanceof Error ? e.message : String(e)}`;
+  }
+}
+
+/**
+ * Redact secrets from `input`.
+ *
+ * `extraPatterns` (config `redactPatterns`) are ADDITIVE to the built-ins and
+ * run last, so a user pattern can only ever remove more, never re-expose
+ * something a built-in already redacted. Patterns that fail to compile are
+ * skipped rather than thrown — set_config validates on write via
+ * validateRedactPattern(), so this only guards a hand-edited config file.
+ * (upstream #112)
+ */
+export function redactSecrets(input: string, extraPatterns?: string[]): string {
   if (!input) return input;
   let out = input;
   out = redactPemBlocks(out);
@@ -233,5 +265,12 @@ export function redactSecrets(input: string): string {
   out = redactAssignments(out);
   out = redactColonFields(out);
   out = redactToolSpecificFlags(out);
+  for (const source of extraPatterns ?? []) {
+    try {
+      out = out.replace(new RegExp(source, "gi"), REDACTED);
+    } catch {
+      continue;
+    }
+  }
   return out;
 }

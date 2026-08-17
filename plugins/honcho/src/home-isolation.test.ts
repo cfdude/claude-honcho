@@ -26,7 +26,7 @@ import { join } from "node:path";
  * the real path in its module-level initializer, and the redirect would come
  * too late to matter.
  */
-import { saveIdCache, loadIdCache, appendClaudeWork, getClaudeContextPath } from "./cache.js";
+import { saveIdCache, loadIdCache } from "./cache.js";
 import { setMemoryState } from "./state.js";
 import { logActivity, getLogPath } from "./log.js";
 
@@ -53,16 +53,12 @@ test("cache.ts writes land under a redirected HOME, not the real one", () => {
 
   withFakeHome((fakeHome) => {
     saveIdCache({ workspace: { name: "isolation-test", id: "test-id" } });
-    appendClaudeWork("isolation test entry");
 
     const fakeCacheFile = join(fakeHome, ".honcho", "cache.json");
     expect(existsSync(fakeCacheFile)).toBe(true);
 
     const loaded = loadIdCache();
     expect(loaded.workspace?.name).toBe("isolation-test");
-
-    expect(getClaudeContextPath().startsWith(fakeHome)).toBe(true);
-    expect(existsSync(getClaudeContextPath())).toBe(true);
   });
 
   const realFilesAfter = existsSync(realHoncho) ? new Set(require("node:fs").readdirSync(realHoncho)) : new Set();

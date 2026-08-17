@@ -8,7 +8,7 @@
  */
 
 import { join } from "path";
-import { existsSync, appendFileSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "fs";
 import { symbols, arrows, box } from "./unicode.js";
 import { isLoggingEnabled } from "./config.js";
 import { honchoDir } from "./home.js";
@@ -144,11 +144,11 @@ export function logActivity(
   try {
     // Check file size and truncate if needed
     if (existsSync(logFile())) {
-      const stats = Bun.file(logFile()).size;
+      const stats = statSync(logFile()).size;
       if (stats > MAX_LOG_SIZE) {
         const content = readFileSync(logFile(), "utf-8");
         const truncated = content.slice(-50 * 1024);
-        Bun.write(logFile(), truncated);
+        writeFileSync(logFile(), truncated);
       }
     }
 

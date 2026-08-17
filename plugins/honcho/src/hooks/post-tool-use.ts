@@ -1,6 +1,6 @@
 import { Honcho } from "@honcho-ai/sdk";
-import { loadConfig, getSessionForPath, getSessionName, getHonchoClientOptions, isPluginEnabled, getCachedStdin } from "../config.js";
-import { appendClaudeWork, getClaudeInstanceId } from "../cache.js";
+import { loadConfig, getSessionForPath, getSessionName, getHonchoClientOptions, isPluginEnabled, getCachedStdin, readStdinText } from "../config.js";
+import { getClaudeInstanceId } from "../cache.js";
 import { logHook, logApiCall, setLogContext } from "../log.js";
 import { visCaptureWithError } from "../visual.js";
 import { redactSecrets } from "../redact.js";
@@ -283,7 +283,7 @@ export async function handlePostToolUse(): Promise<void> {
 
   let hookInput: HookInput = {};
   try {
-    const input = getCachedStdin() ?? await Bun.stdin.text();
+    const input = getCachedStdin() ?? await readStdinText();
     if (input.trim()) {
       hookInput = JSON.parse(input);
     }
@@ -303,11 +303,11 @@ export async function handlePostToolUse(): Promise<void> {
     process.exit(0);
   }
 
-  const summary = formatToolSummary(toolName, toolInput, toolResponse);
+  const summary = redactSecrets(
+    formatToolSummary(toolName, toolInput, toolResponse),
+    config.redactPatterns
+  );
   logHook("post-tool-use", summary, { tool: toolName });
-
-  // INSTANT: Update local claude context file (~2ms)
-  appendClaudeWork(summary);
 
   // Upload to Honcho and wait for completion, bounded by UPLOAD_TIMEOUT_MS. The
   // failure was previously written to the log file only — invisible in the

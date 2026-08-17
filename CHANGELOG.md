@@ -2,7 +2,28 @@
 
 All notable changes to claude-honcho will be documented in this file.
 
-## [Unreleased]
+## [0.3.0] - unreleased
+
+### Changed
+
+- The plugin is distributed as the npm package `@honcho-ai/claude-honcho` and the marketplace installs from it. Releases ship a self-contained bundle that runs under Node, so Bun is no longer a prerequisite for using the plugin — it remains the development toolchain.
+
+### Removed
+
+- `install-local.sh` / `install-local.ps1`. Develop against a working tree with `claude --plugin-dir plugins/honcho` instead.
+- Vendored `node_modules` are no longer committed.
+
+## [0.2.11] - 2026-07-31
+
+### Added
+
+- `/honcho:insights` skill — runs a max-reasoning dialectic pass over accumulated memory and turns it into proposed CLAUDE.md edits, output-style rules, and skill ideas. Falls back to a parallel `honcho_remember` fan-out at `high` if the max query times out. Read-only until the user picks what to apply.
+- Session briefing (session summary + peer card) — injectable at session start, and loadable on demand via the `get_briefing` MCP tool or `/honcho:briefing` skill.
+
+### Fixed
+
+- Hook timeouts specified in seconds instead of milliseconds.
+- `set_config` coerces string booleans.
 
 ## [0.7.0] - 2026-08-06
 

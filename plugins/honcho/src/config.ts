@@ -1,4 +1,5 @@
 import { join, basename, dirname, resolve, sep } from "path";
+import { fileURLToPath } from "url";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "fs";
 import { captureGitState } from "./git.js";
 import { getInstanceIdForCwd, getClaudeInstanceId } from "./cache.js";
@@ -25,11 +26,6 @@ export interface ContextRefreshConfig {
   ttlSeconds?: number;
   /** Skip dialectic chat() calls in user-prompt hook (default: false) */
   skipDialectic?: boolean;
-}
-
-export interface LocalContextConfig {
-  /** Max entries in claude-context.md (default: 50) */
-  maxEntries?: number;
 }
 
 // ============================================
@@ -228,7 +224,8 @@ export interface HostConfig {
   observationMode?: ObservationMode;
   messageUpload?: MessageUploadConfig;
   contextRefresh?: ContextRefreshConfig;
-  localContext?: LocalContextConfig;
+  /** Extra regex patterns redacted from tool summaries (additive to built-in defaults) */
+  redactPatterns?: string[];
   endpoint?: HonchoEndpointConfig;
   /** Composable injection config (session-start + per-turn component menus). */
   injection?: InjectionConfig;
@@ -298,13 +295,20 @@ export function getCachedStdin(): string | null {
   return _stdinText;
 }
 
+/** Runtime-agnostic stdin read (hooks run under bun in dev, node when bundled). */
+export async function readStdinText(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+  return Buffer.concat(chunks).toString("utf-8");
+}
+
 /**
  * Shared hook entry point initialization.
  * Reads stdin once, caches it, detects host, and exits early for unsupported hosts.
  * Must be called at the top of every hook entry point before the handler.
  */
 export async function initHook(): Promise<void> {
-  const stdinText = await Bun.stdin.text();
+  const stdinText = await readStdinText();
   cacheStdin(stdinText);
   let input: Record<string, unknown> = {};
   try { input = JSON.parse(stdinText || "{}"); } catch { process.exit(0); }
@@ -348,7 +352,8 @@ interface HonchoFileConfig {
   messageUpload?: MessageUploadConfig;
   contextRefresh?: ContextRefreshConfig;
   endpoint?: HonchoEndpointConfig;
-  localContext?: LocalContextConfig;
+  /** Extra regex patterns redacted from tool summaries (additive to built-in defaults) */
+  redactPatterns?: string[];
   enabled?: boolean;
   logging?: boolean;
   sessionStrategy?: SessionStrategy;
@@ -426,8 +431,8 @@ export interface HonchoCLAUDEConfig {
   contextRefresh?: ContextRefreshConfig;
   /** SaaS vs local instance config */
   endpoint?: HonchoEndpointConfig;
-  /** Local claude-context.md settings */
-  localContext?: LocalContextConfig;
+  /** Extra regex patterns redacted from tool summaries (additive to built-in defaults) */
+  redactPatterns?: string[];
   /** Composable injection config (session-start + per-turn component menus) */
   injection?: InjectionConfig;
   /** Register the on-demand `honcho_remember` MCP tool (default: false).
@@ -493,15 +498,22 @@ export function configExists(): boolean {
  * located, so callers never advertise a stale hardcoded number.
  */
 export function getPluginVersion(): string {
+  // CLAUDE_PLUGIN_ROOT when the host sets it; otherwise one hop up from this
+  // module, which holds in both layouts (src/ in dev, the dist/ chunk bundled).
   const root = process.env.CLAUDE_PLUGIN_ROOT;
-  if (!root) return "unknown";
-  try {
-    const raw = readFileSync(join(root, ".claude-plugin", "plugin.json"), "utf-8");
-    const version = (JSON.parse(raw) as { version?: unknown }).version;
-    return typeof version === "string" && version ? version : "unknown";
-  } catch {
-    return "unknown";
+  const candidates = [
+    ...(root ? [join(root, ".claude-plugin", "plugin.json")] : []),
+    fileURLToPath(new URL("../.claude-plugin/plugin.json", import.meta.url)),
+  ];
+  for (const manifest of candidates) {
+    try {
+      const version = (JSON.parse(readFileSync(manifest, "utf-8")) as { version?: unknown }).version;
+      if (typeof version === "string" && version) return version;
+    } catch {
+      // Try the next candidate
+    }
   }
+  return "unknown";
 }
 
 /**
@@ -629,7 +641,7 @@ export function resolveConfig(
     messageUpload: hostBlock?.messageUpload ?? raw.messageUpload,
     contextRefresh: hostBlock?.contextRefresh ?? raw.contextRefresh,
     endpoint: hostBlock?.endpoint ?? raw.endpoint,
-    localContext: hostBlock?.localContext ?? raw.localContext,
+    redactPatterns: hostBlock?.redactPatterns ?? raw.redactPatterns,
     injection: hostBlock?.injection ?? raw.injection,
     rememberTool: hostBlock?.rememberTool ?? raw.rememberTool,
     enabled: hostBlock?.enabled ?? raw.enabled,
@@ -858,7 +870,7 @@ export function saveConfig(config: HonchoCLAUDEConfig, cwd: string = process.cwd
   setHostIfExplicit("observationMode", config.observationMode, existing.observationMode);
   setHostIfExplicit("messageUpload", config.messageUpload, existing.messageUpload);
   setHostIfExplicit("contextRefresh", config.contextRefresh, existing.contextRefresh);
-  setHostIfExplicit("localContext", config.localContext, existing.localContext);
+  setHostIfExplicit("redactPatterns", config.redactPatterns, existing.redactPatterns);
   setHostIfExplicit("endpoint", config.endpoint, existing.endpoint);
   setHostIfExplicit("injection", config.injection, existing.injection);
   setHostIfExplicit("rememberTool", config.rememberTool, existing.rememberTool);
@@ -1065,13 +1077,6 @@ export function getContextRefreshConfig(): ContextRefreshConfig {
     messageThreshold: config?.contextRefresh?.messageThreshold ?? 30,
     ttlSeconds: config?.contextRefresh?.ttlSeconds ?? 300,
     skipDialectic: config?.contextRefresh?.skipDialectic ?? false,
-  };
-}
-
-export function getLocalContextConfig(): LocalContextConfig {
-  const config = loadConfig();
-  return {
-    maxEntries: config?.localContext?.maxEntries ?? 50,
   };
 }
 

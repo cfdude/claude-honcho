@@ -113,7 +113,77 @@ test("HONCHO_BUN overrides resolution when PATH has no bun", async () => {
       proc.exited,
     ]);
     expect(exitCode).toBe(0);
-    expect(stdout.trim()).toBe("ran:run:/tmp/hook.ts");
+    // The wrapper now execs `<runtime> <script>` with no `run` subcommand, so the
+    // one invocation works for node (which has no `run`) as well as bun (which
+    // accepts a bare path). $1 is therefore the script and $2 the first passthrough
+    // argument.
+    expect(stdout.trim()).toBe("ran:/tmp/hook.ts:--extra");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a .js target runs under node, so the built bundle needs no bun", async () => {
+  // The whole point of the bundled release (scripts/build.ts, target "node") is
+  // that bun is NOT a prerequisite for USING the plugin. hooks.json still routes
+  // through this wrapper, so if the wrapper insisted on bun it would silently
+  // undo that. PATH is emptied and every bun candidate points nowhere: if the
+  // wrapper reached for bun at all, this exits 1 instead of running.
+  const dir = mkdtempSync(join(tmpdir(), "honcho-node-"));
+  try {
+    const fakeNode = join(dir, "node");
+    writeFileSync(fakeNode, '#!/bin/sh\necho "node-ran:$1:$2"\n');
+    chmodSync(fakeNode, 0o755);
+
+    const proc = Bun.spawn(["/bin/sh", WRAPPER, "/tmp/hook.js", "--extra"], {
+      env: {
+        PATH: "",
+        HOME: "/nonexistent-home",
+        HONCHO_BUN_CANDIDATES: "/nonexistent/path/to/bun",
+        HONCHO_NODE: fakeNode,
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+      stdin: "ignore",
+    });
+    const [stdout, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      proc.exited,
+    ]);
+    expect(exitCode).toBe(0);
+    expect(stdout.trim()).toBe("node-ran:/tmp/hook.js:--extra");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a .ts target still requires bun — node cannot execute TypeScript", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "honcho-ts-"));
+  try {
+    const fakeNode = join(dir, "node");
+    writeFileSync(fakeNode, '#!/bin/sh\necho "node-ran:$1"\n');
+    chmodSync(fakeNode, 0o755);
+
+    // node is available, bun is not. A .ts target must NOT fall back to node.
+    const proc = Bun.spawn(["/bin/sh", WRAPPER, "/tmp/hook.ts"], {
+      env: {
+        PATH: "",
+        HOME: "/nonexistent-home",
+        HONCHO_BUN_CANDIDATES: "/nonexistent/path/to/bun",
+        HONCHO_NODE: fakeNode,
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+      stdin: "ignore",
+    });
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    expect(exitCode).toBe(1);
+    expect(stdout).toBe("");
+    expect(stderr).toContain("'bun' not found");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
