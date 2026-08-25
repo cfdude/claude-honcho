@@ -6,14 +6,13 @@
   },
   "metadata": {
     "description": "Honcho plugins for Claude Code - memory, development tools, and more",
-    "version": "0.2.5"
+    "version": "0.2.11"
   },
   "plugins": [
     {
       "name": "honcho",
-      "source": "./plugins/honcho",
+      "source": { "source": "npm", "package": "@honcho-ai/claude-honcho" },
       "description": "Persistent memory for Claude Code sessions using Honcho",
-      "version": "0.2.5",
       "keywords": ["memory", "context", "persistence"],
       "strict": false
     },

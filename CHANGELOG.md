@@ -2,7 +2,133 @@
 
 All notable changes to claude-honcho will be documented in this file.
 
-## [Unreleased]
+## [0.3.0] - unreleased
+
+### Changed
+
+- The plugin is distributed as the npm package `@honcho-ai/claude-honcho` and the marketplace installs from it. Releases ship a self-contained bundle that runs under Node, so Bun is no longer a prerequisite for using the plugin — it remains the development toolchain.
+
+### Removed
+
+- `install-local.sh` / `install-local.ps1`. Develop against a working tree with `claude --plugin-dir plugins/honcho` instead.
+- Vendored `node_modules` are no longer committed.
+
+## [0.2.11] - 2026-07-31
+
+### Added
+
+- `/honcho:insights` skill — runs a max-reasoning dialectic pass over accumulated memory and turns it into proposed CLAUDE.md edits, output-style rules, and skill ideas. Falls back to a parallel `honcho_remember` fan-out at `high` if the max query times out. Read-only until the user picks what to apply.
+- Session briefing (session summary + peer card) — injectable at session start, and loadable on demand via the `get_briefing` MCP tool or `/honcho:briefing` skill.
+
+### Fixed
+
+- Hook timeouts specified in seconds instead of milliseconds.
+- `set_config` coerces string booleans.
+
+## [0.7.0] - 2026-08-06
+
+Absorbs seven upstream commits by cherry-pick. `81b6f3b` (#92, the self-contained
+npm build) is deliberately **not** taken — see
+`honcho-deploy/docs/plugin-upstream-sync-strategy-2026-08.md`.
+
+### Added
+
+- `/honcho:insights` skill — runs a max-reasoning dialectic pass over accumulated memory and turns it into proposed CLAUDE.md edits, output-style rules, and skill ideas. Falls back to a parallel `honcho_remember` fan-out at `high` if the max query times out. Read-only until the user picks what to apply. (upstream #98)
+- `/honcho:briefing` skill — session briefing over accumulated memory. (upstream #102)
+- `query_conclusions` MCP tool — semantic search over saved conclusions returning IDs usable with `delete_conclusion`, far faster than paging `list_conclusions`. The `search` tool now covers conclusions workspace-wide alongside messages. (upstream #113)
+- Linked git worktrees resolve to their main repository's session, so worktree work lands in the parent repo's memory instead of a separate one. (upstream #107)
+
+### Fixed
+
+- **Stop hook re-uploaded assistant narration already sent.** It collected text by walking back to the last real user prompt, but a task-notification/system wakeup is not a real prompt — so a *second* wakeup re-collected the whole accumulated segment. Wakeups are now segment boundaries. Measured across 23 local sessions before the fix: 434 duplicate assistant uploads, 88% of them from one background-agent-heavy session. Duplication requires wakeups to *cluster*; isolated ones were already correct. (upstream #108)
+- Changing `sessionPeerPrefix` no longer **wipes** `sessions` — user-set session overrides are kept, with a warning that only newly created sessions use the new naming. `sessionStrategy` likewise keeps overrides, flagging them inactive outside the per-directory strategy. (upstream #111)
+- `set_config` coerces string booleans, so `"true"`/`"false"` behave as booleans. (upstream `07748b5`)
+
+## [0.6.1] - 2026-08-03
+
+### Fixed
+
+- **Private-key material could survive redaction in a PEM bundle.** The
+  unterminated-key fallback's lookahead tested for a bare `-----END`, while the
+  primary pass requires `-----END ... PRIVATE KEY-----`. So a private key
+  followed by `-----END CERTIFICATE-----` — the ordinary bundle layout — was
+  skipped by *both* passes and the key material was captured verbatim. Confirmed
+  against the real `redactSecrets()` before and after the fix.
+- The per-session dedup ledger was keyed on the hook's optional `session_id`
+  rather than the `instanceId` the rest of the hook already falls back to. With
+  no `session_id` the ledger collapsed to one shared global `dedup.json`, so
+  concurrent sessions shared a turn counter and suppressed each other's
+  conclusions — and `clearSessionFiles` never cleaned that file up.
+- `loadDedupLedger` accepted any `seen` whose `typeof` was `"object"`, admitting
+  arrays and non-numeric stamps. A stamp that will not coerce makes
+  `turn - lastTurn` `NaN`, and `NaN > WINDOW` is false, so the entry read as a
+  permanent repeat; since only *emitted* entries are restamped, it never healed
+  for the life of the session.
+
+Each fix carries a regression test verified to fail without it.
+
+> Note: 0.5.0 and 0.6.0 shipped without changelog entries. This entry covers
+> only the 0.6.1 fixes rather than reconstructing them after the fact.
+
+## [0.4.0] - 2026-07-25
+
+### Added
+
+- `outputLevel` config field — a four-level dial (`verbose` / `info` / `error` / `off`) controlling how much Honcho prints to the terminal. Defaults to `info`: one status line per event, instead of reprinting every injected conclusion at full length on every turn. `verbose` restores the per-conclusion previews and adds a per-turn diagnostics block (endpoint, resolved workspace + provenance, whether Cloudflare Access headers are being sent — never the credential values). `error` is silent when healthy. `off` prints nothing.
+- `HONCHO_OUTPUT_LEVEL` env var for one-off debugging. It overrides the file config for that invocation only, is never persisted to disk, and an unrecognized value falls back to the configured level rather than silencing output.
+- Failures that were previously written only to the log file are now surfaced in the terminal at `error` and above: per-turn context and dialectic fetch failures, post-tool-use capture upload failures, and stop-hook message upload failures.
+- `set_config` accepts `outputLevel`, so the dial is settable without hand-editing `~/.honcho/config.json`.
+
+### Changed
+
+- The injected `additionalContext` payload is unchanged at every output level, including `off` — `outputLevel` governs display only, and memory quality never depends on it.
+## [0.2.10] - 2026-07-29
+
+### Changed
+
+- Per-turn injection components report a one-line summary instead of printing their contents. `injection.showContents` lists the components that should still print their full payload (default: none). Display only — what reaches the model is unchanged.
+
+## [0.2.9] - 2026-07-28
+
+### Changed
+
+- Per-turn injection's `context` component split into three independently selectable components: `userContext` (the former `context`), `assistantContext` (the same fetch for the AI peer), and `sessionContext` (recent raw messages from the mapped Honcho session via `session.context()`, budget via `injection.sessionContextTokens`). Stored configs using `context` keep working — it resolves to `userContext`.
+
+## [0.2.8] - 2026-07-27
+
+### Added
+
+- `/honcho:import` skill to backfill past Claude Code sessions into Honcho memory.
+- Composable, config-driven memory injection — `injection` config block with per-surface component menus (`sessionStart` / `perTurn`) and retrieval tuning (`searchTopK`, `maxConclusions`, `searchMaxDistance`).
+- Memory-usage directives now ship automatically as SessionStart context — no more manual CLAUDE.md paste.
+- Optional dialectic summary component for the user-prompt hook.
+- `honcho_remember` MCP tool for mid-conversation recall (batched questions, configurable reasoning tier) — opt in via the `rememberTool` config flag; session-start directives nudge proactive use when enabled.
+
+### Fixed
+
+- Machine plumbing (runtime `<<...>>` sentinels, `[Session ended]` markers) is no longer attributed to the user peer.
+- Batched message uploads no longer replay already-accepted batches after a partial failure.
+- SessionEnd hook does nothing beyond logging and state cleanup, so `/exit` can no longer surface "Hook cancelled".
+
+## [0.2.7] - 2026-07-22
+
+### Added
+
+- `saveToolUse` config flag (`HONCHO_SAVE_TOOL_USE` env var) to opt into uploading tool-use messages.
+
+### Changed
+
+- Messages upload live (user prompts on submit, assistant messages from the stop hook) instead of being queued and flushed at session end.
+
+### Fixed
+
+- Stop hook no longer uploads assistant messages when the turn has no preceding user prompt.
+
+## [0.2.6] - 2026-07-21
+
+### Fixed
+
+- MCP `chat` tool no longer times out on long dialectic queries (~80s at max reasoning). Dialectic calls run on a dedicated no-retry Honcho client under a single 120s deadline covering the whole flow, and the plugin's MCP server config sets a 150s per-tool timeout, so the server's clean timeout error always surfaces before the harness aborts the call.
 
 ## [0.2.5] - 2026-06-02
 

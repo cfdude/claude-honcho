@@ -7,14 +7,20 @@
  * - Useful: Real-time debugging and demo capabilities
  */
 
-import { homedir } from "os";
 import { join } from "path";
-import { existsSync, appendFileSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "fs";
 import { symbols, arrows, box } from "./unicode.js";
 import { isLoggingEnabled } from "./config.js";
+import { honchoDir } from "./home.js";
 
-const CACHE_DIR = join(homedir(), ".honcho");
-const LOG_FILE = join(CACHE_DIR, "activity.log");
+// Lazily resolved (not module-level consts) so a `HOME` redirected after import
+// (e.g. by tests) is honored — see home.ts's honchoDir().
+function cacheDir(): string {
+  return honchoDir();
+}
+function logFile(): string {
+  return join(cacheDir(), "activity.log");
+}
 const MAX_LOG_SIZE = 100 * 1024; // 100KB max log size
 
 // ============================================
@@ -91,8 +97,8 @@ const sym = {
 // ============================================
 
 function ensureLogDir(): void {
-  if (!existsSync(CACHE_DIR)) {
-    mkdirSync(CACHE_DIR, { recursive: true });
+  if (!existsSync(cacheDir())) {
+    mkdirSync(cacheDir(), { recursive: true });
   }
 }
 
@@ -137,16 +143,16 @@ export function logActivity(
 
   try {
     // Check file size and truncate if needed
-    if (existsSync(LOG_FILE)) {
-      const stats = Bun.file(LOG_FILE).size;
+    if (existsSync(logFile())) {
+      const stats = statSync(logFile()).size;
       if (stats > MAX_LOG_SIZE) {
-        const content = readFileSync(LOG_FILE, "utf-8");
+        const content = readFileSync(logFile(), "utf-8");
         const truncated = content.slice(-50 * 1024);
-        Bun.write(LOG_FILE, truncated);
+        writeFileSync(logFile(), truncated);
       }
     }
 
-    appendFileSync(LOG_FILE, JSON.stringify(entry) + "\n");
+    appendFileSync(logFile(), JSON.stringify(entry) + "\n");
   } catch {
     // Ignore logging errors
   }
@@ -213,7 +219,7 @@ export function startTimed(source: string, operation: string): (success?: boolea
  * Get the log file path
  */
 export function getLogPath(): string {
-  return LOG_FILE;
+  return logFile();
 }
 
 export interface LogFilter {
@@ -228,12 +234,12 @@ export interface LogFilter {
 export function getRecentLogs(count: number = 50, filter?: LogFilter): LogEntry[] {
   ensureLogDir();
 
-  if (!existsSync(LOG_FILE)) {
+  if (!existsSync(logFile())) {
     return [];
   }
 
   try {
-    const content = readFileSync(LOG_FILE, "utf-8");
+    const content = readFileSync(logFile(), "utf-8");
     const lines = content.trim().split("\n").filter(l => l);
     let entries = lines.map(line => {
       try {
@@ -350,9 +356,9 @@ export function watchLogs(callback: (entries: LogEntry[]) => void): () => void {
 
   // Track by line count, not byte size (more reliable)
   let lastLineCount = 0;
-  if (existsSync(LOG_FILE)) {
+  if (existsSync(logFile())) {
     try {
-      const content = readFileSync(LOG_FILE, "utf-8");
+      const content = readFileSync(logFile(), "utf-8");
       lastLineCount = content.trim().split("\n").filter(l => l).length;
     } catch {
       lastLineCount = 0;
@@ -360,10 +366,10 @@ export function watchLogs(callback: (entries: LogEntry[]) => void): () => void {
   }
 
   const checkForUpdates = () => {
-    if (!existsSync(LOG_FILE)) return;
+    if (!existsSync(logFile())) return;
 
     try {
-      const content = readFileSync(LOG_FILE, "utf-8");
+      const content = readFileSync(logFile(), "utf-8");
       const lines = content.trim().split("\n").filter(l => l);
       const currentLineCount = lines.length;
 
@@ -404,8 +410,8 @@ export function watchLogs(callback: (entries: LogEntry[]) => void): () => void {
  */
 export function clearLogs(): void {
   ensureLogDir();
-  if (existsSync(LOG_FILE)) {
-    writeFileSync(LOG_FILE, "");
+  if (existsSync(logFile())) {
+    writeFileSync(logFile(), "");
   }
 }
 
