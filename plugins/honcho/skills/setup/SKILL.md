@@ -16,7 +16,7 @@ checks for an API key (env var, then `~/.honcho/config.json`), validates the
 connection, writes the config, and installs the memory statusLine:
 
 ```bash
-bun run "${CLAUDE_PLUGIN_ROOT}/src/skills/setup-runner.ts"
+node "${CLAUDE_PLUGIN_ROOT}/dist/skills/setup-runner.js"
 ```
 
 If `CLAUDE_PLUGIN_ROOT` isn't set, the plugin lives here (find the version

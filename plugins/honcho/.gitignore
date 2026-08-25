@@ -1,0 +1,7 @@
+# This branch tracks the BUILT tree, so dist/ is the artifact itself, not build
+# output. Rob's global gitignore (~/.gitignore_global) excludes `dist/`
+# everywhere, which would otherwise leave this branch with no plugin in it —
+# the negation below re-includes it for this directory only.
+!dist/
+node_modules/
+.stage/

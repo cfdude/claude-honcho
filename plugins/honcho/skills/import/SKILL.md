@@ -32,7 +32,7 @@ The user may specify scope in natural language; translate it to flags:
 Run the importer in dry-run mode and show the user the plan:
 
 ```bash
-bun run "${CLAUDE_PLUGIN_ROOT}/src/skills/backfill-runner.ts" --dry-run
+node "${CLAUDE_PLUGIN_ROOT}/dist/skills/backfill-runner.js" --dry-run
 ```
 
 If `CLAUDE_PLUGIN_ROOT` isn't set, the plugin lives here (find the version
@@ -55,7 +55,7 @@ Ask the user to confirm before uploading. **Do not upload without an explicit ye
 On confirmation, run the real import (add `--days`/`--workspace` if the user asked):
 
 ```bash
-bun run "${CLAUDE_PLUGIN_ROOT}/src/skills/backfill-runner.ts" --yes
+node "${CLAUDE_PLUGIN_ROOT}/dist/skills/backfill-runner.js" --yes
 ```
 
 ### 4. Report

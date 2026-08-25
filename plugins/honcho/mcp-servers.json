@@ -1,7 +1,9 @@
 {
   "honcho": {
-    "command": "bun",
-    "args": ["run", "${CLAUDE_PLUGIN_ROOT}/mcp-server.ts"],
+    "command": "node",
+    "args": [
+      "${CLAUDE_PLUGIN_ROOT}/dist/mcp-server.js"
+    ],
     "timeout": 150000,
     "alwaysLoad": true
   }

@@ -11,7 +11,7 @@
           },
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/run-hook.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.ts\"",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/run-hook.sh\" \"${CLAUDE_PLUGIN_ROOT}/dist/hooks/session-start.js\"",
             "timeout": 30,
             "async": true
           }
@@ -23,7 +23,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/run-hook.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/session-end.ts\"",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/run-hook.sh\" \"${CLAUDE_PLUGIN_ROOT}/dist/hooks/session-end.js\"",
             "timeout": 5
           }
         ]
@@ -35,7 +35,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/run-hook.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/post-tool-use.ts\"",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/run-hook.sh\" \"${CLAUDE_PLUGIN_ROOT}/dist/hooks/post-tool-use.js\"",
             "timeout": 10,
             "async": true
           }
@@ -48,7 +48,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/run-hook.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/pre-tool-honcho.ts\"",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/run-hook.sh\" \"${CLAUDE_PLUGIN_ROOT}/dist/hooks/pre-tool-honcho.js\"",
             "timeout": 4
           }
         ]
@@ -59,12 +59,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/run-hook.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/user-prompt.ts\"",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/run-hook.sh\" \"${CLAUDE_PLUGIN_ROOT}/dist/hooks/user-prompt.js\"",
             "timeout": 125
           },
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/run-hook.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/save-user-message.ts\"",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/run-hook.sh\" \"${CLAUDE_PLUGIN_ROOT}/dist/hooks/save-user-message.js\"",
             "timeout": 30,
             "async": true
           }
@@ -77,7 +77,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/run-hook.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/pre-compact.ts\"",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/run-hook.sh\" \"${CLAUDE_PLUGIN_ROOT}/dist/hooks/pre-compact.js\"",
             "timeout": 20
           }
         ]
@@ -87,7 +87,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/run-hook.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/pre-compact.ts\"",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/run-hook.sh\" \"${CLAUDE_PLUGIN_ROOT}/dist/hooks/pre-compact.js\"",
             "timeout": 20
           }
         ]
@@ -98,7 +98,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/run-hook.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/stop.ts\"",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/run-hook.sh\" \"${CLAUDE_PLUGIN_ROOT}/dist/hooks/stop.js\"",
             "timeout": 10,
             "async": true
           }
