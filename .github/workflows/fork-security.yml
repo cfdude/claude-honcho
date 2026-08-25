@@ -1,0 +1,55 @@
+# FORK-ONLY — do not include this file in a pull request to plastic-labs/claude-honcho.
+#
+# This is cfdude's fork-local security gate. Upstream has its own CI and has not
+# asked for these scans, so shipping this file upstream would be noise in the
+# diff at best and a broken `uses:` reference at worst — the reusable workflows
+# below live in cfdude/.github and mean nothing in the upstream org.
+#
+# HOW IT STAYS OUT OF UPSTREAM PRs: branches for upstream PRs are cut from
+# `upstream/main`, never from this fork's `main`, so this file is not in their
+# history. Verified for upstream-pr/39-dedup and upstream-pr/81-redact-secrets.
+# Keep doing that. The filename is deliberately `fork-security.yml` rather than
+# `security.yml` so that if it ever does appear in an upstream diff, it is
+# obvious and trivially droppable.
+#
+# The name also avoids colliding with upstream's own ci.yml / release.yml, which
+# this fork carries from #116.
+#
+# Delegates to the shared reusable workflows in cfdude/.github so scanning stays
+# consistent across repos and is maintained in one place.
+
+name: Fork Security
+
+on:
+  push:
+    branches: [main]        # post-merge baseline on the protected branch
+  pull_request:
+    branches: [main]        # gate every PR into main — this is where scans block merges
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 1'  # Mondays 06:00 UTC — catch newly-disclosed CVEs
+
+# One scan per ref; cancel superseded runs so PR updates don't pile up or collide
+# on SARIF upload.
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  semgrep:
+    name: Semgrep SAST
+    uses: cfdude/.github/.github/workflows/security-semgrep.yml@main
+    permissions:
+      contents: read
+      security-events: write
+
+  trivy:
+    name: Trivy FS scan
+    uses: cfdude/.github/.github/workflows/security-trivy.yml@main
+    permissions:
+      contents: read
+      security-events: write
