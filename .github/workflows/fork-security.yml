@@ -17,6 +17,17 @@
 #
 # Delegates to the shared reusable workflows in cfdude/.github so scanning stays
 # consistent across repos and is maintained in one place.
+#
+# PINNED REFS: the `uses:` lines below name a commit SHA in cfdude/.github, not
+# @main. Unpinned, anything landing on that repo's main would execute here
+# immediately with security-events: write — no review step. The reusable
+# workflows already SHA-pin their own third-party actions (actions/checkout,
+# codeql-action), so leaving the wrapper floating was the weaker link.
+#
+# TO BUMP after changing the shared workflows:
+#   gh api repos/cfdude/.github/commits/main -q .sha
+# then replace the SHA on both `uses:` lines and update the trailing date
+# comment. Keep cfdude-plugins and cfdude/claude-honcho on the SAME pin.
 
 name: Fork Security
 
@@ -42,14 +53,14 @@ permissions:
 jobs:
   semgrep:
     name: Semgrep SAST
-    uses: cfdude/.github/.github/workflows/security-semgrep.yml@main
+    uses: cfdude/.github/.github/workflows/security-semgrep.yml@b5f9e50d643459b3d89c0cd5fdb53119ed4f4746  # cfdude/.github main as of 2026-08-07
     permissions:
       contents: read
       security-events: write
 
   trivy:
     name: Trivy FS scan
-    uses: cfdude/.github/.github/workflows/security-trivy.yml@main
+    uses: cfdude/.github/.github/workflows/security-trivy.yml@b5f9e50d643459b3d89c0cd5fdb53119ed4f4746  # cfdude/.github main as of 2026-08-07
     permissions:
       contents: read
       security-events: write
