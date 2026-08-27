@@ -2,6 +2,43 @@
 
 All notable changes to claude-honcho will be documented in this file.
 
+## [0.9.0] - 2026-08-26
+
+Ships the work merged after 0.8.0 was stamped on 2026-08-16. The headersHelper
+in particular was inert until this bump: the marketplace tracks `main` but
+Claude Code caches by **version**, so `main` carried the file while every
+installed 0.8.0 did not.
+
+### Added
+
+- **`scripts/resolve-workspace-headers.mjs` — headersHelper for MCP-over-HTTP.**
+  Claude Code runs it at connect time in the session's cwd and merges its stdout
+  JSON into the connection headers, so a shared HTTP MCP server can still learn
+  per-session workspace identity. It emits `X-Honcho-Workspace-ID`, resolved by
+  the same precedence the hooks use: `HONCHO_WORKSPACE` env → nearest
+  `.honcho.json` walking up to `$HOME` → the global default.
+
+  A **malformed** `.honcho.json` stops the walk instead of falling through to the
+  parent. Inheriting a parent's workspace past an unreadable child is how a
+  Highway directory would silently resolve to `personal` — the isolation
+  guarantee has to fail closed, and there is a test pinning exactly that.
+
+  Written in plain Node rather than TypeScript because the helper runs before any
+  build step is guaranteed to exist, and Node is the only runtime the plugin can
+  assume at connect time.
+
+- **Fork-only CI: Semgrep SAST and Trivy FS + TruffleHog secret scanning.**
+  Runs on push to `main`, on every PR, and weekly. Lives in
+  `.github/workflows/fork-security.yml` — a filename upstream does not use — so
+  it stays out of any PR sent upstream. Reusable workflows are pinned to a
+  commit SHA in `cfdude/.github`, not `@main`: unpinned, anything landing there
+  would execute here immediately with `security-events: write`.
+
+### Note
+
+This release does not switch the plugin to HTTP transport. `mcp-servers.json`
+still launches the stdio server; the helper is inert until that config changes.
+
 ## [0.3.0] - unreleased
 
 ### Changed
