@@ -74,12 +74,27 @@ const workspace =
 
 const headers = { "X-Honcho-Workspace-ID": workspace };
 
-// The API key is read from the same config the hooks use, so HTTP and hook
+// Credentials are read from the same config the hooks use, so HTTP and hook
 // transports cannot drift onto different credentials.
 try {
   const cfg = JSON.parse(readFileSync(join(home, ".honcho", "config.json"), "utf-8"));
   const key = cfg.apiKey ?? cfg?.hosts?.claude_code?.apiKey;
   if (typeof key === "string" && key.length > 0) headers.Authorization = `Bearer ${key}`;
+
+  // Cloudflare Access service token, when the MCP endpoint is behind Access.
+  // An Access-protected hostname answers an unauthenticated request with a 403
+  // HTML login page, so without these the connection never reaches the server
+  // and the failure looks nothing like an auth error.
+  //
+  // Both halves or neither: one alone is not a partial credential, it is an
+  // invalid one, and Access rejects it exactly as it rejects none. Sending a
+  // half-pair would only make a misconfiguration harder to read.
+  const id = cfg.accessClientId ?? cfg?.hosts?.claude_code?.accessClientId;
+  const secret = cfg.accessClientSecret ?? cfg?.hosts?.claude_code?.accessClientSecret;
+  if (typeof id === "string" && id.length > 0 && typeof secret === "string" && secret.length > 0) {
+    headers["CF-Access-Client-Id"] = id;
+    headers["CF-Access-Client-Secret"] = secret;
+  }
 } catch {
   /* no key: the server will reject with a clear message rather than us guessing */
 }

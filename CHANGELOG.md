@@ -2,6 +2,27 @@
 
 All notable changes to claude-honcho will be documented in this file.
 
+## [0.9.1] - 2026-08-27
+
+### Added
+
+- **The headersHelper now emits the Cloudflare Access service token** —
+  `CF-Access-Client-Id` / `CF-Access-Client-Secret`, read from the same
+  `~/.honcho/config.json` it already reads the API key from.
+
+  Without this the helper could not reach an Access-protected MCP endpoint at
+  all. Access answers an unauthenticated request with a 403 **HTML login page**,
+  so the connection never reaches the server and the failure looks nothing like
+  an auth error — which is exactly why it is worth sending automatically rather
+  than documenting as a manual header.
+
+  Both halves or neither. One alone is not a partial credential, it is an
+  invalid one, and Access rejects it exactly as it rejects none; sending a
+  half-pair would only turn a legible misconfiguration into a mysterious 403.
+  Deployments with no service token in config are unaffected — neither header
+  is emitted.
+
+
 ## [0.9.0] - 2026-08-26
 
 Ships the work merged after 0.8.0 was stamped on 2026-08-16. The headersHelper
