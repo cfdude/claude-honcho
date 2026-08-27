@@ -87,6 +87,56 @@ describe("resolve-workspace-headers", () => {
     } finally { rmSync(home, { recursive: true, force: true }); }
   });
 
+  test("omits the Cloudflare Access pair entirely when the config has no service token", async () => {
+    const home = sandbox();
+    try {
+      const h = await run(home, { HOME: home });
+      expect(h["CF-Access-Client-Id"]).toBeUndefined();
+      expect(h["CF-Access-Client-Secret"]).toBeUndefined();
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  test("emits the Cloudflare Access pair when the config carries a service token", async () => {
+    const home = sandbox();
+    try {
+      writeFileSync(
+        join(home, ".honcho", "config.json"),
+        JSON.stringify({
+          workspace: "personal",
+          apiKey: "hch" + "_testkeynotreal000000",
+          accessClientId: "abc123.access",
+          accessClientSecret: "s" + "ecretnotreal000000",
+        }),
+      );
+      const h = await run(home, { HOME: home });
+      expect(h["CF-Access-Client-Id"]).toBe("abc123.access");
+      expect(h["CF-Access-Client-Secret"]).toBe("s" + "ecretnotreal000000");
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  // A half-pair is not a partial credential — Access rejects it exactly as it
+  // rejects none. Sending one alone would only make a misconfiguration read as
+  // a mysterious 403 instead of an obviously-absent token.
+  test.each([
+    ["id only", { accessClientId: "abc123.access" }],
+    ["secret only", { accessClientSecret: "s" + "ecretnotreal000000" }],
+    ["empty strings", { accessClientId: "", accessClientSecret: "" }],
+  ])("sends NEITHER Access header when only half the pair is present (%s)", async (_label, partial) => {
+    const home = sandbox();
+    try {
+      writeFileSync(
+        join(home, ".honcho", "config.json"),
+        JSON.stringify({ workspace: "personal", apiKey: "hch" + "_testkeynotreal000000", ...partial }),
+      );
+      const h = await run(home, { HOME: home });
+      expect(h["CF-Access-Client-Id"]).toBeUndefined();
+      expect(h["CF-Access-Client-Secret"]).toBeUndefined();
+      // the rest of the headers must still be intact
+      expect(h["X-Honcho-Workspace-ID"]).toBe("personal");
+      expect(h.Authorization).toStartWith("Bearer ");
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
   test("emits the Authorization header from the same config the hooks read", async () => {
     const home = sandbox();
     try {
